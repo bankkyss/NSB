@@ -70,7 +70,7 @@ def check_spark_cluster_health() -> None:
         reachable = []
         for host_port in masters:
             host = host_port.split(":")[0]
-            url = f"http://{host}:8080"  # Default Spark Master Web UI port
+            url = f"http://{host}:80"  
             try:
                 r = requests.get(url, timeout=5)
                 if r.status_code == 200:
@@ -145,7 +145,7 @@ with DAG(
         "owner": "airflow",
         "depends_on_past": False,
         "email_on_failure": False,
-        "retries": 1,
+        "retries": 0,
         "retry_delay": timedelta(minutes=3),
     },
 ) as dag:
