@@ -109,12 +109,12 @@ try:
         "--postgres-port", str(pg_conn.port),
         "--postgres-db", pg_conn.schema,
         "--postgres-user", pg_conn.login,
-        "--postgres-password", pg_conn.get_password(),
+        "--postgres-password", pg_conn.password,
         "--postgres-table", "vehicle_events",
         
         "--redis-host", redis_conn.host,
         "--redis-port", str(redis_conn.port),
-        "--redis-password", redis_conn.get_password(),
+        "--redis-password", redis_conn.password,
         
         "--kafka-brokers", kafka_brokers,
         "--kafka-alerts-topic", kafka_alerts_topic,
