@@ -169,20 +169,23 @@ with DAG(
         packages=ALL_PACKAGES,
         
         # --- การปรับแต่งประสิทธิภาพ Spark ---
-        # ควรปรับค่าเหล่านี้ให้เหมาะสมกับขนาดของ Cluster และ Workload
+        # เป้าหมาย: 15 Cores และไม่เกิน 32GB RAM
         num_executors=2,
-        executor_cores=6,
-        executor_memory="14g",
+        executor_cores=7,       # <--- ปรับเป็น 7 เพื่อให้ได้ 14 cores สำหรับ executor
+        executor_memory="14g",  # <--- ใช้ 14g เพื่อให้ RAM รวมเป็น 4g + (2*14g) = 32g
         driver_memory="4g",
         
         # Spark configurations เพิ่มเติม
         conf={
+            # --- !! ตัวแปรสำคัญ: ปิด Dynamic Allocation !! ---
+            "spark.dynamicAllocation.enabled": "false", # <--- เพิ่มบรรทัดนี้เพื่อบังคับให้ใช้ค่า num_executors ที่กำหนด
+
             "spark.driver.maxResultSize": "2g",
             "spark.sql.adaptive.enabled": "true",
             "spark.serializer": "org.apache.spark.serializer.KryoSerializer",
             "spark.network.timeout": "800s",
             "spark.executor.heartbeatInterval": "60s",
-            "spark.sql.shuffle.partitions": "20", # (2 * 7) * 2
+            "spark.sql.shuffle.partitions": "28", # <--- ปรับให้สอดคล้อง (2 * 7) * 2 = 28
         },
         
         # ส่ง arguments ที่ดึงมาจาก Airflow
