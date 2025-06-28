@@ -168,22 +168,24 @@ with DAG(
         name="vehicle_area_analysis_{{ ds_nodash }}_{{ ts_nodash }}",
         packages=ALL_PACKAGES,
         
-        # --- การปรับแต่งประสิทธิภาพ Spark (Final Configuration) ---
+        # --- การปรับแต่งประสิทธิภาพ Spark (Corrected Final Configuration) ---
         # เป้าหมาย: 15 Cores และไม่เกิน 32GB RAM
 
-        # !! ตัวแปรสำคัญที่สุด บังคับให้ Master จอง core สำหรับ Executor แค่ 14 !!
+        # บังคับ Master ให้จอง Core สำหรับ Executor ทั้งหมด 14 Cores
         total_executor_cores=14, 
         
-        # พารามิเตอร์ด้านล่างจะถูกใช้เพื่อแบ่งสรร 14 cores ที่ได้มา
+        # พารามิเตอร์สำหรับแบ่งสรร 14 Cores ที่ได้มา
         num_executors=2,
-        executor_cores=7, # (14 cores / 2 executors = 7 cores/executor)
-        
+        executor_cores=7,
         executor_memory="14g",
         driver_memory="4g",
-        driver_cores=1, # รวมกับ total_executor_cores แล้วจะเป็น 15
+        # driver_cores=1, # <--- ลบบรรทัดนี้ออก
         
         # Spark configurations เพิ่มเติม
         conf={
+            # !! ย้าย driver_cores (ในชื่อ spark.driver.cores) มาไว้ในนี้แทน !!
+            "spark.driver.cores": "1", 
+            
             "spark.dynamicAllocation.enabled": "false",
             "spark.sql.adaptive.enabled": "false",
         },
