@@ -22,7 +22,7 @@ from airflow.models.variable import Variable
 from airflow.operators.python import PythonOperator
 from airflow.providers.apache.spark.operators.spark_submit import SparkSubmitOperator
 from airflow.exceptions import AirflowNotFoundException
-
+import os
 # ---------------------------------------------------------------------------
 # ค่าคงที่สำหรับ DAG - สามารถปรับเปลี่ยนได้ตามสภาพแวดล้อม
 # ---------------------------------------------------------------------------
@@ -159,7 +159,7 @@ with DAG(
         task_id="check_spark_cluster_health",
         python_callable=check_spark_cluster_health,
     )
-
+    spark_driver_ip = os.environ.get("SPARK_DRIVER_POD_IP")
     # Task หลักสำหรับรัน Spark Job
     run_spark_job = SparkSubmitOperator(
         task_id="run_vehicle_area_analysis_job",
@@ -183,9 +183,10 @@ with DAG(
         
         # Spark configurations เพิ่มเติม
         conf={
+            "spark.driver.host": spark_driver_ip,
             # !! ย้าย driver_cores (ในชื่อ spark.driver.cores) มาไว้ในนี้แทน !!
             "spark.driver.cores": "1", 
-            
+            "spark.driver.bindAddress": "0.0.0.0",
             "spark.dynamicAllocation.enabled": "false",
             "spark.sql.adaptive.enabled": "false",
         },
