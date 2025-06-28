@@ -168,27 +168,27 @@ with DAG(
         name="vehicle_area_analysis_{{ ds_nodash }}_{{ ts_nodash }}",
         packages=ALL_PACKAGES,
         
-        # --- การปรับแต่งประสิทธิภาพ Spark ---
+        # --- การปรับแต่งประสิทธิภาพ Spark (Final Configuration) ---
         # เป้าหมาย: 15 Cores และไม่เกิน 32GB RAM
+
+        # !! ตัวแปรสำคัญที่สุด บังคับให้ Master จอง core สำหรับ Executor แค่ 14 !!
+        total_executor_cores=14, 
+        
+        # พารามิเตอร์ด้านล่างจะถูกใช้เพื่อแบ่งสรร 14 cores ที่ได้มา
         num_executors=2,
-        executor_cores=6,       # <--- ปรับเป็น 7 เพื่อให้ได้ 14 cores สำหรับ executor
-        executor_memory="12g",  # <--- ใช้ 14g เพื่อให้ RAM รวมเป็น 4g + (2*14g) = 32g
+        executor_cores=7, # (14 cores / 2 executors = 7 cores/executor)
+        
+        executor_memory="14g",
         driver_memory="4g",
+        driver_cores=1, # รวมกับ total_executor_cores แล้วจะเป็น 15
         
         # Spark configurations เพิ่มเติม
         conf={
-            "spark.dynamicAllocation.enabled": "false", 
-            "spark.driver.maxResultSize": "2g",
-            "spark.sql.adaptive.enabled": "true",
-            "spark.serializer": "org.apache.spark.serializer.KryoSerializer",
-            "spark.network.timeout": "800s",
-            "spark.executor.heartbeatInterval": "60s",
-            "spark.sql.shuffle.partitions": "10", # <--- ปรับให้สอดคล้อง (2 * 7) * 2 = 28
+            "spark.dynamicAllocation.enabled": "false",
+            "spark.sql.adaptive.enabled": "false",
         },
         
-        # ส่ง arguments ที่ดึงมาจาก Airflow
         application_args=APPLICATION_ARGS,
-        
         verbose=True,
     )
 
