@@ -170,9 +170,9 @@ with DAG(
         
         # --- การปรับแต่งประสิทธิภาพ Spark ---
         # ควรปรับค่าเหล่านี้ให้เหมาะสมกับขนาดของ Cluster และ Workload
-        num_executors=4,
-        executor_cores=4,
-        executor_memory="8g",
+        num_executors=2,
+        executor_cores=7,
+        executor_memory="14g",
         driver_memory="4g",
         
         # Spark configurations เพิ่มเติม
@@ -182,7 +182,7 @@ with DAG(
             "spark.serializer": "org.apache.spark.serializer.KryoSerializer",
             "spark.network.timeout": "800s",
             "spark.executor.heartbeatInterval": "60s",
-            "spark.sql.shuffle.partitions": "32", # (num_executors * executor_cores) * 2
+            "spark.sql.shuffle.partitions": "28", # (2 * 7) * 2
         },
         
         # ส่ง arguments ที่ดึงมาจาก Airflow
