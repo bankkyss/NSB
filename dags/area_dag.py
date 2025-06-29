@@ -78,7 +78,7 @@ def check_spark_cluster_health() -> None:
         for host_port in masters:
             # แก้ไข: ใช้ host จาก connection ตรงๆ และกำหนด port ของ Web UI
             host = host_port.replace("spark://", "").split(":")[0]
-            url = f"http://{host}:8080"  # Spark Master Web UI ปกติใช้พอร์ต 8080
+            url = f"http://{host}:80"  # Spark Master Web UI ปกติใช้พอร์ต 8080
             try:
                 # ใช้ HEAD request เพื่อความรวดเร็ว
                 r = requests.head(url, timeout=5)
