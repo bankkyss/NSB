@@ -104,16 +104,15 @@ def get_all_areas_from_redis(redis_client, pattern="area_detect:*"):
     logger.info(f"Successfully loaded {len(areas)} area configurations from Redis.")
     return areas
 
-
 def process_vehicle_intersections(spark, events_df, areas_list, time_threshold):
     """
     Core processing logic. Identifies license plates that have traversed defined areas.
+    NEW LOGIC: The LATEST event of a detection group must be within the time_threshold.
     """
     logger = logging.getLogger(__name__)
 
     if not areas_list:
         logger.warning("Area list from Redis is empty. No processing will occur.")
-        # Return empty DataFrames with the correct schema to avoid downstream errors
         return spark.createDataFrame([], spark.createDataFrame([], StructType()).schema), \
                spark.createDataFrame([], spark.createDataFrame([], StructType()).schema)
 
@@ -126,61 +125,69 @@ def process_vehicle_intersections(spark, events_df, areas_list, time_threshold):
     ])
     areas_df = spark.createDataFrame(areas_list, schema=area_schema)
 
-    # 2. Pre-process events: filter for recent events and deduplicate
-    logger.info(f"Filtering events within the last {time_threshold} seconds.")
-    current_time_unix = spark.sql("SELECT unix_timestamp()").collect()[0][0]
-    
+    # 2. Pre-process events: Deduplicate events per camera, but DO NOT filter by time yet.
+    #    เราจะกรองเอา Event ที่ซ้ำซ้อนออก (เช่น รถคันเดิมเจอกล้องตัวเดิมหลายครั้ง) แต่ยังไม่กรองเวลาตรงนี้
     window_spec = Window.partitionBy("license_plate", "camera_id").orderBy(col("event_time").desc())
-
-    recent_events_df = (
+    
+    # <--- การเปลี่ยนแปลงจุดที่ 1: นำฟิลเตอร์เวลาออกไปจากขั้นตอนนี้
+    unique_events_df = (
         events_df
-        .withColumn("event_time_unix", unix_timestamp(col("event_time")))
-        .filter((lit(current_time_unix) - col("event_time_unix")) <= time_threshold)
         .withColumn("row_num", row_number().over(window_spec))
         .filter(col("row_num") == 1)
-        .drop("row_num", "event_time_unix")
+        .drop("row_num")
     ).cache()
 
-    event_count = recent_events_df.count()
-    logger.info(f"Found {event_count} unique recent events to process.")
+    event_count = unique_events_df.count()
+    logger.info(f"Found {event_count} unique events within lookback-hours to process.")
     if event_count == 0:
-        logger.warning("No recent events found. Exiting processing logic.")
-        recent_events_df.unpersist()
+        logger.warning("No events found. Exiting processing logic.")
+        unique_events_df.unpersist()
         return spark.createDataFrame([], spark.createDataFrame([], StructType()).schema), \
                spark.createDataFrame([], spark.createDataFrame([], StructType()).schema)
-
 
     # 3. Explode areas DataFrame to join with events
     areas_exploded_df = areas_df.withColumn("camera_id", explode(col("camera_ids")))
 
     # 4. Join events with their potential areas
-    events_with_areas_df = recent_events_df.join(
+    events_with_areas_df = unique_events_df.join(
         areas_exploded_df,
         on="camera_id",
         how="inner"
     )
 
     # 5. Group by area and license plate to find intersections
-    all_event_columns = [c for c in recent_events_df.columns]
+    # <--- การเปลี่ยนแปลงจุดที่ 2: เพิ่มการหา event_time ที่ใหม่ที่สุดในกลุ่ม
+    all_event_columns = [c for c in unique_events_df.columns]
     area_plate_aggregates_df = (
         events_with_areas_df
         .groupBy("area_id", "area_name", "license_plate", "required_camera_count")
         .agg(
             countDistinct("camera_id").alias("seen_camera_count"),
             collect_list("camera_id").alias("cameras"),
-            collect_list(struct(*all_event_columns)).alias("events_data")
+            collect_list(struct(*all_event_columns)).alias("events_data"),
+            # [FIXED] Use the aliased spark_max function instead of Python's built-in max
+            spark_max("event_time").alias("latest_event_time")
         )
     )
 
-    # 6. Filter for full detections
-    detections_df = area_plate_aggregates_df.filter(
+    # 6. Filter for detections based on the NEW logic
+    # <--- การเปลี่ยนแปลงจุดที่ 3: ปรับปรุงเงื่อนไขการกรองทั้งหมด
+    
+    # 6.1. ก่อนอื่น, กรองหากลุ่มที่เจอจำนวนกล้องครบถ้วนก่อน ไม่ว่าเวลาจะเป็นเท่าไหร่
+    potential_detections_df = area_plate_aggregates_df.filter(
         col("seen_camera_count") >= col("required_camera_count")
     )
-    logger.info(f"Found {detections_df.count()} license plates matching full area criteria.")
-    detections_df.cache() # Cache for creating two separate output DFs
 
-    # 7. Prepare final DataFrames for Kafka
-    # DataFrame 1: Detailed logs for each event in a successful detection
+    # 6.2. จากนั้น, กรองอีกชั้นว่า Event ล่าสุดของกลุ่มนั้นๆ อยู่ในกรอบเวลาที่กำหนดหรือไม่
+    current_time_unix = spark.sql("SELECT unix_timestamp()").collect()[0][0]
+    detections_df = potential_detections_df.filter(
+        (lit(current_time_unix) - unix_timestamp(col("latest_event_time"))) <= time_threshold
+    )
+    
+    logger.info(f"Found {detections_df.count()} license plates matching full area criteria with new time logic.")
+    detections_df.cache()
+
+    # 7. Prepare final DataFrames for Kafka (เหมือนเดิม)
     logs_df = (
         detections_df.select("area_id", "area_name", "events_data")
         .withColumn("event_struct", explode(col("events_data")))
@@ -189,15 +196,108 @@ def process_vehicle_intersections(spark, events_df, areas_list, time_threshold):
         .withColumn("record_uuid", uuid_udf(col("license_plate")))
     )
 
-    # DataFrame 2: Aggregated alerts, one per detected plate per area
     alerts_df = (
         detections_df.select("area_id", "area_name", "license_plate", "cameras")
         .withColumn("event_type", lit('area_detection'))
     )
 
-    recent_events_df.unpersist()
+    unique_events_df.unpersist()
     detections_df.unpersist()
     return alerts_df, logs_df
+
+# def process_vehicle_intersections(spark, events_df, areas_list, time_threshold):
+#     """
+#     Core processing logic. Identifies license plates that have traversed defined areas.
+#     """
+#     logger = logging.getLogger(__name__)
+
+#     if not areas_list:
+#         logger.warning("Area list from Redis is empty. No processing will occur.")
+#         # Return empty DataFrames with the correct schema to avoid downstream errors
+#         return spark.createDataFrame([], spark.createDataFrame([], StructType()).schema), \
+#                spark.createDataFrame([], spark.createDataFrame([], StructType()).schema)
+
+#     # 1. Create a DataFrame from the area configurations
+#     area_schema = StructType([
+#         StructField("area_id", StringType(), False),
+#         StructField("area_name", StringType(), False),
+#         StructField("camera_ids", ArrayType(StringType()), False),
+#         StructField("required_camera_count", StringType(), False)
+#     ])
+#     areas_df = spark.createDataFrame(areas_list, schema=area_schema)
+
+#     # 2. Pre-process events: filter for recent events and deduplicate
+#     logger.info(f"Filtering events within the last {time_threshold} seconds.")
+#     current_time_unix = spark.sql("SELECT unix_timestamp()").collect()[0][0]
+    
+#     window_spec = Window.partitionBy("license_plate", "camera_id").orderBy(col("event_time").desc())
+
+#     recent_events_df = (
+#         events_df
+#         .withColumn("event_time_unix", unix_timestamp(col("event_time")))
+#         .filter((lit(current_time_unix) - col("event_time_unix")) <= time_threshold)
+#         .withColumn("row_num", row_number().over(window_spec))
+#         .filter(col("row_num") == 1)
+#         .drop("row_num", "event_time_unix")
+#     ).cache()
+
+#     event_count = recent_events_df.count()
+#     logger.info(f"Found {event_count} unique recent events to process.")
+#     if event_count == 0:
+#         logger.warning("No recent events found. Exiting processing logic.")
+#         recent_events_df.unpersist()
+#         return spark.createDataFrame([], spark.createDataFrame([], StructType()).schema), \
+#                spark.createDataFrame([], spark.createDataFrame([], StructType()).schema)
+
+
+#     # 3. Explode areas DataFrame to join with events
+#     areas_exploded_df = areas_df.withColumn("camera_id", explode(col("camera_ids")))
+
+#     # 4. Join events with their potential areas
+#     events_with_areas_df = recent_events_df.join(
+#         areas_exploded_df,
+#         on="camera_id",
+#         how="inner"
+#     )
+
+#     # 5. Group by area and license plate to find intersections
+#     all_event_columns = [c for c in recent_events_df.columns]
+#     area_plate_aggregates_df = (
+#         events_with_areas_df
+#         .groupBy("area_id", "area_name", "license_plate", "required_camera_count")
+#         .agg(
+#             countDistinct("camera_id").alias("seen_camera_count"),
+#             collect_list("camera_id").alias("cameras"),
+#             collect_list(struct(*all_event_columns)).alias("events_data")
+#         )
+#     )
+
+#     # 6. Filter for full detections
+#     detections_df = area_plate_aggregates_df.filter(
+#         col("seen_camera_count") >= col("required_camera_count")
+#     )
+#     logger.info(f"Found {detections_df.count()} license plates matching full area criteria.")
+#     detections_df.cache() # Cache for creating two separate output DFs
+
+#     # 7. Prepare final DataFrames for Kafka
+#     # DataFrame 1: Detailed logs for each event in a successful detection
+#     logs_df = (
+#         detections_df.select("area_id", "area_name", "events_data")
+#         .withColumn("event_struct", explode(col("events_data")))
+#         .select("area_id", "area_name", "event_struct.*")
+#         .withColumn("event_type", lit("area_detection"))
+#         .withColumn("record_uuid", uuid_udf(col("license_plate")))
+#     )
+
+#     # DataFrame 2: Aggregated alerts, one per detected plate per area
+#     alerts_df = (
+#         detections_df.select("area_id", "area_name", "license_plate", "cameras")
+#         .withColumn("event_type", lit('area_detection'))
+#     )
+
+#     recent_events_df.unpersist()
+#     detections_df.unpersist()
+#     return alerts_df, logs_df
 
 
 def main():
