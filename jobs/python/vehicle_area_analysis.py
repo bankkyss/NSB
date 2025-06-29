@@ -17,6 +17,7 @@ from pyspark.sql.functions import (
     to_json,
     udf,
     unix_timestamp,
+    max as spark_max
 )
 from pyspark.sql.types import ArrayType, StringType, StructField, StructType
 from pyspark.sql.window import Window
@@ -335,7 +336,7 @@ def main():
             .option("fetchsize", "10000")
             .option("numPartitions", "8") # Can be tuned
             .load()
-        )
+        ).cache()
         logger.info(f"Loaded {df.count()} records from PostgreSQL.")
     except Exception as e:
         logger.error(f"Failed to load data from PostgreSQL: {e}", exc_info=True)
@@ -354,6 +355,7 @@ def main():
         r.ping()
     except Exception as e:
         logger.error(f"Failed to connect to Redis: {e}", exc_info=True)
+        df.unpersist()
         spark.stop()
         return
         
@@ -361,7 +363,7 @@ def main():
 
     # --- Process Data ---
     alerts_df, logs_df = process_vehicle_intersections(spark, df, all_areas, args.time_threshold_seconds)
-
+    df.unpersist()
     # --- Send Results to Kafka ---
     # Send detailed logs
     if not logs_df.rdd.isEmpty():

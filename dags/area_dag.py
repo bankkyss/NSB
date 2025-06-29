@@ -40,10 +40,16 @@ REDIS_CONN_ID = "redis_main"
 PYSPARK_EXPECTED_VERSION = "3.5.5"
 
 # Spark Packages ที่จำเป็นสำหรับ Job
-GRAPHFRAMES_COORD = "graphframes:graphframes:0.8.4-spark3.5-s_2.12"
+# เราจะกำหนดค่านี้ใน 'conf' ของ SparkSubmitOperator เพื่อความแน่นอน
+# ดู Log เดิมเพื่อหาเวอร์ชันที่เข้ากันได้
+KAFKA_CLIENTS_COORD = "org.apache.kafka:kafka-clients:3.4.1"
+SPARK_KAFKA_SQL_COORD = "org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0"
 POSTGRES_JDBC_COORD = "org.postgresql:postgresql:42.2.19"
-SPARK_KAFKA_COORD = "org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0"
-ALL_PACKAGES = f"{GRAPHFRAMES_COORD},{POSTGRES_JDBC_COORD},{SPARK_KAFKA_COORD}"
+GRAPHFRAMES_COORD = "graphframes:graphframes:0.8.4-spark3.5-s_2.12"
+
+# รวมทุก Packages เป็น String เดียว
+# การเพิ่ม kafka-clients เข้าไปโดยตรงจะช่วยแก้ปัญหา NoClassDefFoundError
+ALL_PACKAGES_FOR_CONF = f"{SPARK_KAFKA_SQL_COORD},{KAFKA_CLIENTS_COORD},{POSTGRES_JDBC_COORD},{GRAPHFRAMES_COORD}"
 
 log = logging.getLogger(__name__)
 
@@ -66,20 +72,23 @@ def check_spark_cluster_health() -> None:
     log.info(f"Checking Spark master health for connection: {SPARK_CONN_ID}")
     try:
         conn = BaseHook.get_connection(SPARK_CONN_ID)
-        masters = conn.host.removeprefix("spark://").split(",")
+        # แก้ไข: ใช้ conn.host โดยตรง ไม่ต้องตัด prefix
+        masters = conn.host.split(",")
         reachable = []
         for host_port in masters:
-            host = host_port.split(":")[0]
-            url = f"http://{host}:80"  
+            # แก้ไข: ใช้ host จาก connection ตรงๆ และกำหนด port ของ Web UI
+            host = host_port.replace("spark://", "").split(":")[0]
+            url = f"http://{host}:8080"  # Spark Master Web UI ปกติใช้พอร์ต 8080
             try:
-                r = requests.get(url, timeout=5)
-                if r.status_code == 200:
-                    log.info(f"Successfully reached Spark master at {url}")
-                    reachable.append(url)
+                # ใช้ HEAD request เพื่อความรวดเร็ว
+                r = requests.head(url, timeout=5)
+                r.raise_for_status() # ตรวจสอบ status code ที่เป็น 2xx
+                log.info(f"Successfully reached Spark master UI at {url}")
+                reachable.append(url)
             except requests.RequestException as e:
-                log.warning(f"Could not reach Spark master at {url}. Error: {e}")
+                log.warning(f"Could not reach Spark master UI at {url}. Error: {e}")
         if not reachable:
-            raise ConnectionError("No reachable Spark masters found!")
+            raise ConnectionError("No reachable Spark master UIs found!")
     except AirflowNotFoundException:
         log.error(f"Airflow connection '{SPARK_CONN_ID}' not found.")
         raise
@@ -90,20 +99,16 @@ def check_spark_cluster_health() -> None:
 # ---------------------------------------------------------------------------
 # ดึง Configurations จาก Airflow Connections และ Variables
 # ---------------------------------------------------------------------------
-# ใช้ try-except เพื่อป้องกัน DAG หยุดทำงานหากยังไม่ได้ตั้งค่า Variable
 try:
     pg_conn = BaseHook.get_connection(POSTGRES_CONN_ID)
     redis_conn = BaseHook.get_connection(REDIS_CONN_ID)
     
-    # ดึงค่าจาก Airflow Variables (สามารถไปตั้งค่าได้ที่ Admin -> Variables)
     kafka_brokers = Variable.get("kafka_brokers", "kafka.kafka.svc.cluster.local:9092")
     kafka_alerts_topic = Variable.get("kafka_alerts_topic", "alearts_topic")
     kafka_log_event_topic = Variable.get("kafka_log_event_topic", "log_event_topic")
     lookback_hours = Variable.get("lpr_lookback_hours", "12")
     time_threshold = Variable.get("lpr_time_threshold_seconds", "300")
 
-    # สร้าง List ของ Arguments ที่จะส่งให้ PySpark Script
-    # วิธีนี้ทำให้เราไม่ต้อง Hardcode ค่าใดๆ ในสคริปต์หลักเลย
     APPLICATION_ARGS = [
         "--postgres-host", pg_conn.host,
         "--postgres-port", str(pg_conn.port),
@@ -111,22 +116,19 @@ try:
         "--postgres-user", pg_conn.login,
         "--postgres-password", pg_conn.password,
         "--postgres-table", "vehicle_events",
-        
         "--redis-host", redis_conn.host,
         "--redis-port", str(redis_conn.port),
         "--redis-password", redis_conn.password,
-        
         "--kafka-brokers", kafka_brokers,
         "--kafka-alerts-topic", kafka_alerts_topic,
         "--kafka-log-event-topic", kafka_log_event_topic,
-        
         "--lookback-hours", lookback_hours,
         "--time-threshold-seconds", time_threshold,
     ]
-except AirflowNotFoundException as e:
+except (AirflowNotFoundException, KeyError) as e:
     log.warning(f"Could not find a required Airflow Connection or Variable: {e}. "
                 "The DAG will be created but tasks may fail. Please configure them in the UI.")
-    APPLICATION_ARGS = [] # ตั้งเป็น list ว่างเพื่อไม่ให้ DAG แตก
+    APPLICATION_ARGS = []
 
 
 # ---------------------------------------------------------------------------
@@ -136,10 +138,10 @@ with DAG(
     dag_id="vehicle_area_analysis_production",
     description="วิเคราะห์การตัดกันของป้ายทะเบียนในพื้นที่ต่างๆ โดยใช้ Spark",
     start_date=datetime(2025, 6, 27),
-    schedule="*/5 * * * *",  # รันทุก 5 นาที
+    schedule="*/5 * * * *",  
     catchup=False,
     tags=["spark", "area", "vehicle", "production"],
-    max_active_runs=1,  # ป้องกันการรันซ้อนกันมากเกินไป
+    max_active_runs=2,
     dagrun_timeout=timedelta(minutes=30),
     default_args={
         "owner": "airflow",
@@ -159,41 +161,50 @@ with DAG(
         task_id="check_spark_cluster_health",
         python_callable=check_spark_cluster_health,
     )
-    spark_driver_ip = os.environ.get("SPARK_DRIVER_POD_IP")
-    # Task หลักสำหรับรัน Spark Job
+
+    # ควรดึงค่า IP ของ pod ภายใน task เพื่อให้ได้ค่าล่าสุดเสมอ
+    spark_driver_ip = os.environ.get("SPARK_DRIVER_POD_IP", "0.0.0.0")
+
     run_spark_job = SparkSubmitOperator(
         task_id="run_vehicle_area_analysis_job",
         application=SCRIPT_PATH,
         conn_id=SPARK_CONN_ID,
         name="vehicle_area_analysis_{{ ds_nodash }}_{{ ts_nodash }}",
-        packages=ALL_PACKAGES,
         
-        # --- การปรับแต่งประสิทธิภาพ Spark (Corrected Final Configuration) ---
-        # เป้าหมาย: 15 Cores และไม่เกิน 32GB RAM
-
-        # บังคับ Master ให้จอง Core สำหรับ Executor ทั้งหมด 14 Cores
+        # --- ลบ parameter 'packages' ออกจากตรงนี้ ---
+        # packages=ALL_PACKAGES, 
+        
+        # --- การปรับแต่งประสิทธิภาพ Spark ---
         total_executor_cores=14, 
-        
+
         # พารามิเตอร์สำหรับแบ่งสรร 14 Cores ที่ได้มา
         num_executors=2,
         executor_cores=7,
         executor_memory="14g",
         driver_memory="4g",
-        # driver_cores=1, # <--- ลบบรรทัดนี้ออก
         
-        # Spark configurations เพิ่มเติม
+        # --- Spark configurations เพิ่มเติม (แก้ไขจุดนี้) ---
         conf={
+            # การกำหนดพื้นฐาน
             "spark.driver.host": spark_driver_ip,
-            # !! ย้าย driver_cores (ในชื่อ spark.driver.cores) มาไว้ในนี้แทน !!
             "spark.driver.cores": "1", 
             "spark.driver.bindAddress": "0.0.0.0",
             "spark.dynamicAllocation.enabled": "false",
+            
+            
+            # การตั้งค่าประสิทธิภาพ
             "spark.sql.adaptive.enabled": "false",
+            
+            # !! แก้ไขสำคัญ: กำหนด packages ที่นี่เพื่อความแน่นอน !!
+            # วิธีนี้จะบังคับให้ Spark resolve และกระจาย JARs ไปยังทุก executor
+            "spark.jars.packages": ALL_PACKAGES_FOR_CONF,
+            
+            # (ทางเลือก) ระบุ repository เพิ่มเติมหากจำเป็น
+            "spark.jars.repositories": "https://repos.spark-packages.org/",
         },
         
         application_args=APPLICATION_ARGS,
         verbose=True,
     )
 
-    # กำหนดลำดับการทำงานของ Tasks
     check_pyspark >> check_cluster >> run_spark_job
