@@ -159,8 +159,12 @@ def process_vehicle_intersections(spark, events_df, areas_list, time_threshold):
         .withColumn("event_type", lit("area_detection"))
         .withColumn("record_uuid_list", col("events_data.record_uuid"))
         .select(
-            "license_plate", "area_name", "area_id", "event_type", "record_uuid_list",
-            "cameras" # ... (เลือกคอลัมน์อื่นๆ ของ alert) ...
+            "license_plate", "cameras", "car_id_list", "province_list",
+            "vehicle_brand_list", "vehicle_brand_model_list", "vehicle_color_list",
+            "vehicle_body_type_list", "vehicle_brand_year_list", "camera_name_list",
+            "event_time_list", "event_date_list", "gps_latitude_list",
+            "gps_longitude_list", "created_at_list", "record_uuid_list",
+            "area_name", "area_id", "event_type"
         )
     ).cache() # Cache alerts_df ไว้ เพราะจะดึง uuid list ออกมาใช้
 
