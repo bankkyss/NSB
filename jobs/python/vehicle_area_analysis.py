@@ -105,14 +105,14 @@ def get_all_areas_from_redis(redis_client, pattern="area_detect:*"):
     logger.info(f"Successfully loaded {len(areas)} area configurations from Redis.")
     return areas
 
-def process_vehicle_intersections(spark, events_df, areas_list, time_threshold,processing_ts):
+def process_vehicle_intersections(spark, events_df, areas_list, time_threshold, processing_ts):
     """
     Core processing logic that strictly derives logs from the created alerts.
     Workflow: Detections -> alerts_df -> Extract UUIDs -> Query for logs_df.
     """
     logger = logging.getLogger(__name__)
 
-    # --- ขั้นตอนที่ 1: เตรียมข้อมูลเบื้องต้น (เหมือนเดิม) ---
+    # --- ขั้นตอนที่ 1: เตรียมข้อมูลเบื้องต้น ---
     area_schema = StructType([
         StructField("area_id", StringType(), False),
         StructField("area_name", StringType(), False),
@@ -128,9 +128,9 @@ def process_vehicle_intersections(spark, events_df, areas_list, time_threshold,p
         .filter(col("row_num") == 1)
         .drop("row_num")
         .withColumn("record_uuid", uuid_udf(col("license_plate")))
-    ).cache() # Cache เพราะจะใช้ join ตอนท้าย
+    ).cache()
 
-    # --- ขั้นตอนที่ 2: สร้าง alerts_df ให้เสร็จสมบูรณ์ก่อน ---
+    # --- ขั้นตอนที่ 2: สร้าง alerts_df ---
     areas_exploded_df = areas_df.withColumn("camera_id", explode(col("camera_ids")))
     events_with_areas_df = unique_events_df.join(areas_exploded_df, on="camera_id", how="inner")
 
@@ -141,7 +141,6 @@ def process_vehicle_intersections(spark, events_df, areas_list, time_threshold,p
         .agg(
             countDistinct("camera_id").alias("seen_camera_count"),
             spark_max("event_time").alias("latest_event_time"),
-            # Aggregation สำหรับ alerts_df - รวบรวมข้อมูลทั้งหมดที่ต้องการ
             collect_list("camera_id").alias("cameras"),
             collect_list("car_id").alias("car_id_list"),
             collect_list("province").alias("province_list"),
@@ -157,15 +156,21 @@ def process_vehicle_intersections(spark, events_df, areas_list, time_threshold,p
             collect_list("gps_longitude").alias("gps_longitude_list"),
             collect_list("created_at").alias("created_at_list"),
             collect_list("record_uuid").alias("record_uuid_list"),
-            collect_list(struct(*all_event_columns)).alias("events_data") # ยังต้องใช้ events_data เพื่อ logs_df
+            collect_list(struct(*all_event_columns)).alias("events_data")
         )
     )
 
     potential_detections_df = area_plate_aggregates_df.filter(col("seen_camera_count") >= col("required_camera_count"))
-    # current_time_unix = spark.sql("SELECT unix_timestamp()").collect()[0][0]
+    
+    # *** FIX: ใช้ timestamp เดียวกันตลอด ***
+    processing_ts_lit = lit(processing_ts)
     detections_df = potential_detections_df.filter(
-        (unix_timestamp(lit(processing_ts)) - unix_timestamp(col("latest_event_time"))) <= time_threshold
-    )
+        (unix_timestamp(processing_ts_lit) - unix_timestamp(col("latest_event_time"))) <= time_threshold
+    ).cache()  # *** FIX: เพิ่ม cache ***
+
+    # Count detections ก่อน transform
+    detections_count = detections_df.count()
+    logger.info(f"Found {detections_count} detections after filtering.")
 
     alerts_df = (
         detections_df
@@ -190,42 +195,40 @@ def process_vehicle_intersections(spark, events_df, areas_list, time_threshold,p
             "area_name",
             "area_id",
             "event_type",
-            "events_data"  # เก็บเอาไว้สำหรับ logs_df
+            "events_data"
         )
-    ).cache()
+    ).cache()  # *** FIX: รักษา cache ***
 
-    logger.info(f"Successfully created {alerts_df.count()} alerts.")
+    # *** FIX: Count alerts ทันทีหลัง cache ***
+    alerts_count = alerts_df.count()
+    logger.info(f"Successfully created {alerts_count} alerts.")
 
-    # --- ขั้นตอนที่ 3: ดึง UUID ทั้งหมดจาก alerts_df ---
-    # Explode list ของ UUID ทั้งหมดออกมาให้เป็นแถวเดียว แล้วเอาเฉพาะค่าที่ไม่ซ้ำกัน
+    # --- ขั้นตอนที่ 3: สร้าง logs_df จาก cached detections_df ---
+    events_with_area_info_df = (
+        detections_df.select("area_id", "area_name", explode("events_data").alias("event_struct"))
+        .select("area_id", "area_name", "event_struct.*")
+    )
+    
+    # ดึง UUID ทั้งหมดจาก alerts_df ที่ cache แล้ว
     uuids_to_keep_df = (
         alerts_df
         .select(explode(col("record_uuid_list")).alias("record_uuid"))
         .distinct()
     )
 
-    # --- ขั้นตอนที่ 4: Query หา logs_df โดยใช้ UUID ที่รวบรวมไว้ ---
-    # นำรายการ UUID ที่ต้องการ ไป JOIN กับข้อมูล event ดั้งเดิม (unique_events_df)
-    # เพื่อให้ได้เฉพาะ Log ที่มี record_uuid ตรงกับใน Alert เท่านั้น
-    # นอกจากนี้ ต้องนำ area_name และ area_id กลับมา join ด้วย
-    
-    # สร้าง DataFrame ที่มีข้อมูล area สำหรับแต่ละ event log
-    events_with_area_info_df = (
-        detections_df.select("area_id", "area_name", explode("events_data").alias("event_struct"))
-        .select("area_id", "area_name", "event_struct.*")
-    )
-    
     logs_df = (
         events_with_area_info_df
-        .join(uuids_to_keep_df, on="record_uuid", how="inner") # ใช้ Inner Join เสมือนการ Query
+        .join(uuids_to_keep_df, on="record_uuid", how="inner")
         .withColumn("event_type", lit("area_detection"))
-    )
+    ).cache()  # *** FIX: เพิ่ม cache ***
 
-    logger.info(f"Derived {logs_df.count()} logs from the created alerts.")
+    # *** FIX: Count logs ทันทีหลัง cache ***
+    logs_count = logs_df.count()
+    logger.info(f"Derived {logs_count} logs from the created alerts.")
 
-    # --- ขั้นตอนที่ 5: เคลียร์ Cache ---
+    # เคลียร์ cache ที่ไม่ใช้แล้ว
     unique_events_df.unpersist()
-    alerts_df.unpersist()
+    detections_df.unpersist()
 
     return alerts_df, logs_df
 
@@ -291,7 +294,9 @@ def main():
     all_areas = get_all_areas_from_redis(r)
 
     # --- Process Data ---
-    alerts_df, logs_df = process_vehicle_intersections(spark, df, all_areas, args.time_threshold_seconds,processing_timestamp)
+    alerts_df, logs_df = process_vehicle_intersections(
+        spark, df, all_areas, args.time_threshold_seconds, processing_timestamp
+    )
     df.unpersist()
     # --- Send Results to Kafka ---
     # Send detailed logs
