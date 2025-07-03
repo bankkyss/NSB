@@ -107,19 +107,12 @@ def get_all_areas_from_redis(redis_client, pattern="area_detect:*"):
 
 def process_vehicle_intersections(spark, events_df, areas_list, time_threshold):
     """
-    ฟังก์ชันประมวลผลหลักที่ถูกแก้ไขแล้ว
-    - สร้าง alerts_df ที่มีรายละเอียดเป็นลิสต์ของข้อมูลทั้งหมด
-    - สร้าง logs_df ที่เป็น event ดั้งเดิมซึ่งนำไปสู่การเกิด alert นั้นๆ
+    Core processing logic that strictly derives logs from the created alerts.
+    Workflow: Detections -> alerts_df -> Extract UUIDs -> Query for logs_df.
     """
     logger = logging.getLogger(__name__)
 
-    if not areas_list:
-        logger.warning("Area list from Redis is empty.")
-        # สร้าง DataFrame ว่างเปล่ากลับไป เพื่อให้โปรแกรมทำงานต่อได้โดยไม่ผิดพลาด
-        empty_schema = StructType([])
-        return spark.createDataFrame([], empty_schema), spark.createDataFrame([], empty_schema)
-
-    # 1. สร้าง Area DataFrame จากข้อมูลที่ดึงมาจาก Redis
+    # --- ขั้นตอนที่ 1: เตรียมข้อมูลเบื้องต้น (เหมือนเดิม) ---
     area_schema = StructType([
         StructField("area_id", StringType(), False),
         StructField("area_name", StringType(), False),
@@ -128,37 +121,27 @@ def process_vehicle_intersections(spark, events_df, areas_list, time_threshold):
     ])
     areas_df = spark.createDataFrame(areas_list, schema=area_schema)
 
-    # 2. ลดความซ้ำซ้อนของข้อมูล (Deduplicate) และเพิ่ม record_uuid ที่ไม่ซ้ำกันสำหรับแต่ละ event
     window_spec = Window.partitionBy("license_plate", "camera_id").orderBy(col("event_time").desc())
     unique_events_df = (
         events_df
         .withColumn("row_num", row_number().over(window_spec))
         .filter(col("row_num") == 1)
         .drop("row_num")
-        .withColumn("record_uuid", uuid_udf(col("license_plate"))) # สร้าง UUID ที่นี่
-    ).cache() # Cache ไว้เพราะจะถูกนำไปใช้หลายครั้ง
+        .withColumn("record_uuid", uuid_udf(col("license_plate")))
+    ).cache() # Cache เพราะจะใช้ join ตอนท้าย
 
-    if unique_events_df.rdd.isEmpty():
-        logger.warning("No unique events found within lookback-hours.")
-        unique_events_df.unpersist()
-        empty_schema = StructType([])
-        return spark.createDataFrame([], empty_schema), spark.createDataFrame([], empty_schema)
-
-    # 3. Join event กับข้อมูล area เพื่อหาว่า event ไหนอยู่ใน area ใด
+    # --- ขั้นตอนที่ 2: สร้าง alerts_df ให้เสร็จสมบูรณ์ก่อน ---
     areas_exploded_df = areas_df.withColumn("camera_id", explode(col("camera_ids")))
     events_with_areas_df = unique_events_df.join(areas_exploded_df, on="camera_id", how="inner")
 
-    # 4. ทำ Aggregation เพื่อรวบรวมข้อมูลทั้งหมดที่จำเป็นสำหรับทั้ง alerts_df และ logs_df
     all_event_columns = [c for c in unique_events_df.columns]
     area_plate_aggregates_df = (
         events_with_areas_df
         .groupBy("area_id", "area_name", "license_plate", "required_camera_count")
         .agg(
-            # --- Aggregation พื้นฐานสำหรับเงื่อนไขการแจ้งเตือน ---
             countDistinct("camera_id").alias("seen_camera_count"),
             spark_max("event_time").alias("latest_event_time"),
-            
-            # --- Aggregation สำหรับสร้างคอลัมน์ลิสต์ใน alerts_df ---
+            # Aggregation สำหรับ alerts_df - รวบรวมข้อมูลทั้งหมดที่ต้องการ
             collect_list("camera_id").alias("cameras"),
             collect_list("car_id").alias("car_id_list"),
             collect_list("province").alias("province_list"),
@@ -173,168 +156,80 @@ def process_vehicle_intersections(spark, events_df, areas_list, time_threshold):
             collect_list("gps_latitude").alias("gps_latitude_list"),
             collect_list("gps_longitude").alias("gps_longitude_list"),
             collect_list("created_at").alias("created_at_list"),
-            
-            # --- Aggregation สำหรับสร้าง logs_df (ยังคงต้องเก็บ event ดั้งเดิมไว้) ---
-            collect_list(struct(*all_event_columns)).alias("events_data")
+            collect_list("record_uuid").alias("record_uuid_list"),
+            collect_list(struct(*all_event_columns)).alias("events_data") # ยังต้องใช้ events_data เพื่อ logs_df
         )
     )
 
-    # 5. กรองข้อมูลเฉพาะที่เข้าเงื่อนไขการแจ้งเตือน (จำนวนกล้องครบและอยู่ในกรอบเวลา)
-    potential_detections_df = area_plate_aggregates_df.filter(
-        col("seen_camera_count") >= col("required_camera_count")
-    )
+    potential_detections_df = area_plate_aggregates_df.filter(col("seen_camera_count") >= col("required_camera_count"))
     current_time_unix = spark.sql("SELECT unix_timestamp()").collect()[0][0]
     detections_df = potential_detections_df.filter(
         (lit(current_time_unix) - unix_timestamp(col("latest_event_time"))) <= time_threshold
-    ).cache() # Cache ไว้เพราะจะสร้าง DataFrame 2 ตัวจากมัน
+    )
 
-    logger.info(f"Found {detections_df.count()} license plates matching full area criteria.")
-    
-    # 6.A. สร้าง alerts_df ที่มีรายละเอียดครบถ้วน
     alerts_df = (
         detections_df
         .withColumn("event_type", lit("area_detection"))
-        .withColumn("record_uuid_list", col("events_data.record_uuid")) # ดึงลิสต์ของ UUID จาก events_data
         .select(
-            "license_plate", "cameras", "car_id_list", "province_list",
-            "vehicle_brand_list", "vehicle_brand_model_list", "vehicle_color_list",
-            "vehicle_body_type_list", "vehicle_brand_year_list", "camera_name_list",
-            "event_time_list", "event_date_list", "gps_latitude_list",
-            "gps_longitude_list", "created_at_list", "record_uuid_list",
-            "area_name", "area_id", "event_type"
+            "license_plate",
+            "cameras",
+            "car_id_list",
+            "province_list", 
+            "vehicle_brand_list",
+            "vehicle_brand_model_list",
+            "vehicle_color_list",
+            "vehicle_body_type_list",
+            "vehicle_brand_year_list",
+            "camera_name_list",
+            "event_time_list",
+            "event_date_list",
+            "gps_latitude_list",
+            "gps_longitude_list",
+            "created_at_list",
+            "record_uuid_list",
+            "area_name",
+            "area_id",
+            "event_type",
+            "events_data"  # เก็บเอาไว้สำหรับ logs_df
         )
+    ).cache()
+
+    logger.info(f"Successfully created {alerts_df.count()} alerts.")
+
+    # --- ขั้นตอนที่ 3: ดึง UUID ทั้งหมดจาก alerts_df ---
+    # Explode list ของ UUID ทั้งหมดออกมาให้เป็นแถวเดียว แล้วเอาเฉพาะค่าที่ไม่ซ้ำกัน
+    uuids_to_keep_df = (
+        alerts_df
+        .select(explode(col("record_uuid_list")).alias("record_uuid"))
+        .distinct()
+    )
+
+    # --- ขั้นตอนที่ 4: Query หา logs_df โดยใช้ UUID ที่รวบรวมไว้ ---
+    # นำรายการ UUID ที่ต้องการ ไป JOIN กับข้อมูล event ดั้งเดิม (unique_events_df)
+    # เพื่อให้ได้เฉพาะ Log ที่มี record_uuid ตรงกับใน Alert เท่านั้น
+    # นอกจากนี้ ต้องนำ area_name และ area_id กลับมา join ด้วย
+    
+    # สร้าง DataFrame ที่มีข้อมูล area สำหรับแต่ละ event log
+    events_with_area_info_df = (
+        detections_df.select("area_id", "area_name", explode("events_data").alias("event_struct"))
+        .select("area_id", "area_name", "event_struct.*")
     )
     
-    # 6.B. สร้าง logs_df จากข้อมูล event ดั้งเดิมที่รวบรวมไว้
     logs_df = (
-        detections_df.select("area_id", "area_name", "events_data")
-        .withColumn("event_struct", explode(col("events_data"))) # แตก Struct ของ event ออกมาเป็นแต่ละแถว
-        .select("area_id", "area_name", "event_struct.*") # เลือก field ทั้งหมดจาก struct
+        events_with_area_info_df
+        .join(uuids_to_keep_df, on="record_uuid", how="inner") # ใช้ Inner Join เสมือนการ Query
         .withColumn("event_type", lit("area_detection"))
     )
 
-    # 7. ล้าง Cache เพื่อคืนหน่วยความจำ
+    logger.info(f"Derived {logs_df.count()} logs from the created alerts.")
+
+    # --- ขั้นตอนที่ 5: เคลียร์ Cache ---
     unique_events_df.unpersist()
-    detections_df.unpersist()
-    
+    alerts_df.unpersist()
+
     return alerts_df, logs_df
 
-# def process_vehicle_intersections(spark, events_df, areas_list, time_threshold):
-#     """
-#     Core processing logic.
-#     This function now creates BOTH the new detailed alert AND the original logs DataFrame.
-#     """
-#     logger = logging.getLogger(__name__)
 
-#     if not areas_list:
-#         logger.warning("Area list from Redis is empty.")
-#         empty_schema = StructType([])
-#         return spark.createDataFrame([], empty_schema), spark.createDataFrame([], empty_schema)
-
-#     # 1. Create Area DataFrame
-#     area_schema = StructType([
-#         StructField("area_id", StringType(), False),
-#         StructField("area_name", StringType(), False),
-#         StructField("camera_ids", ArrayType(StringType()), False),
-#         StructField("required_camera_count", StringType(), False)
-#     ])
-#     areas_df = spark.createDataFrame(areas_list, schema=area_schema)
-
-#     # 2. Deduplicate events AND ADD record_uuid HERE
-#     window_spec = Window.partitionBy("license_plate", "camera_id").orderBy(col("event_time").desc())
-#     unique_events_df = (
-#         events_df
-#         .withColumn("row_num", row_number().over(window_spec))
-#         .filter(col("row_num") == 1)
-#         .drop("row_num")
-#         # --- START FIX ---
-#         # สร้าง record_uuid ที่นี่ เพื่อให้มันเข้าไปอยู่ใน events_data
-#         .withColumn("record_uuid", uuid_udf(col("license_plate")))
-#         # --- END FIX ---
-#     ).cache()
-
-#     if unique_events_df.rdd.isEmpty():
-#         logger.warning("No unique events found within lookback-hours.")
-#         unique_events_df.unpersist()
-#         empty_schema = StructType([])
-#         return spark.createDataFrame([], empty_schema), spark.createDataFrame([], empty_schema)
-
-#     # 3. Join events with areas
-#     areas_exploded_df = areas_df.withColumn("camera_id", explode(col("camera_ids")))
-#     events_with_areas_df = unique_events_df.join(areas_exploded_df, on="camera_id", how="inner")
-
-#     # 4. Perform a HYBRID aggregation to collect data for BOTH output formats
-#     all_event_columns = [c for c in unique_events_df.columns]
-#     area_plate_aggregates_df = (
-#         events_with_areas_df
-#         .groupBy("area_id", "area_name", "license_plate", "required_camera_count")
-#         .agg(
-#             countDistinct("camera_id").alias("seen_camera_count"),
-#             spark_max("event_time").alias("latest_event_time"),
-            
-#             # --- Aggregation for NEW detailed alerts_df ---
-#             collect_list("camera_id").alias("cameras"),
-#             collect_list("car_id").alias("car_id_list"),
-#             collect_list("province").alias("province_list"),
-#             collect_list("vehicle_brand").alias("vehicle_brand_list"),
-#             collect_list("vehicle_brand_model").alias("vehicle_brand_model_list"),
-#             collect_list("vehicle_color").alias("vehicle_color_list"),
-#             collect_list("vehicle_body_type").alias("vehicle_body_type_list"),
-#             collect_list("vehicle_brand_year").alias("vehicle_brand_year_list"),
-#             collect_list("camera_name").alias("camera_name_list"),
-#             collect_list("event_time").alias("event_time_list"),
-#             collect_list("event_date").alias("event_date_list"),
-#             collect_list("gps_latitude").alias("gps_latitude_list"),
-#             collect_list("gps_longitude").alias("gps_longitude_list"),
-#             collect_list("created_at").alias("created_at_list"),
-            
-#             # --- Aggregation for OLD logs_df (collect original event structs) ---
-#             # ตอนนี้ events_data จะมี record_uuid อยู่ข้างในแล้ว
-#             collect_list(struct(*all_event_columns)).alias("events_data")
-#         )
-#     )
-
-#     # 5. Filter for valid detections
-#     potential_detections_df = area_plate_aggregates_df.filter(col("seen_camera_count") >= col("required_camera_count"))
-#     current_time_unix = spark.sql("SELECT unix_timestamp()").collect()[0][0]
-#     detections_df = potential_detections_df.filter(
-#         (lit(current_time_unix) - unix_timestamp(col("latest_event_time"))) <= time_threshold
-#     ).cache() # Cache because we are creating two DataFrames from it
-
-#     logger.info(f"Found {detections_df.count()} license plates matching full area criteria.")
-    
-#     # 6.A. Create the NEW detailed alerts_df
-#     alerts_df = (
-#         detections_df
-#         .withColumn("event_type", lit("area_detection"))
-#         # บรรทัดนี้จะทำงานได้ถูกต้องแล้ว
-#         .withColumn("record_uuid_list", col("events_data.record_uuid"))
-#         .select(
-#             "license_plate", "cameras", "car_id_list", "province_list",
-#             "vehicle_brand_list", "vehicle_brand_model_list", "vehicle_color_list",
-#             "vehicle_body_type_list", "vehicle_brand_year_list", "camera_name_list",
-#             "event_time_list", "event_date_list", "gps_latitude_list",
-#             "gps_longitude_list", "created_at_list", "record_uuid_list",
-#             "area_name", "area_id", "event_type"
-#         )
-#     )
-    
-#     # 6.B. Create the ORIGINAL logs_df by exploding the collected event data
-#     logs_df = (
-#         detections_df.select("area_id", "area_name", "events_data")
-#         .withColumn("event_struct", explode(col("events_data")))
-#         .select("area_id", "area_name", "event_struct.*")
-#         .withColumn("event_type", lit("area_detection"))
-#         # ไม่จำเป็นต้องสร้าง uuid ที่นี่อีกต่อไป เพราะมันถูกสร้างไปแล้วและอยู่ใน event_struct
-#         # .withColumn("record_uuid", uuid_udf(col("license_plate"))) 
-#     )
-
-#     unique_events_df.unpersist()
-#     detections_df.unpersist()
-    
-#     return alerts_df, logs_df
-
-# 
 def main():
     """Main execution function."""
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
