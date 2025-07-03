@@ -105,7 +105,7 @@ def get_all_areas_from_redis(redis_client, pattern="area_detect:*"):
     logger.info(f"Successfully loaded {len(areas)} area configurations from Redis.")
     return areas
 
-def process_vehicle_intersections(spark, events_df, areas_list, time_threshold):
+def process_vehicle_intersections(spark, events_df, areas_list, time_threshold,processing_ts):
     """
     Core processing logic that strictly derives logs from the created alerts.
     Workflow: Detections -> alerts_df -> Extract UUIDs -> Query for logs_df.
@@ -162,9 +162,9 @@ def process_vehicle_intersections(spark, events_df, areas_list, time_threshold):
     )
 
     potential_detections_df = area_plate_aggregates_df.filter(col("seen_camera_count") >= col("required_camera_count"))
-    current_time_unix = spark.sql("SELECT unix_timestamp()").collect()[0][0]
+    # current_time_unix = spark.sql("SELECT unix_timestamp()").collect()[0][0]
     detections_df = potential_detections_df.filter(
-        (lit(current_time_unix) - unix_timestamp(col("latest_event_time"))) <= time_threshold
+        (unix_timestamp(lit(processing_ts)) - unix_timestamp(col("latest_event_time"))) <= time_threshold
     )
 
     alerts_df = (
@@ -244,7 +244,7 @@ def main():
     )
     spark.sparkContext.setLogLevel("WARN")
     logger.info(f"Spark Session created. Running with arguments: {vars(args)}")
-
+    processing_timestamp = spark.sql("SELECT current_timestamp()").collect()[0][0]
     # --- Load Data from PostgreSQL ---
     dbtable_query = (
         f"(SELECT * FROM {args.postgres_table} "
@@ -291,7 +291,7 @@ def main():
     all_areas = get_all_areas_from_redis(r)
 
     # --- Process Data ---
-    alerts_df, logs_df = process_vehicle_intersections(spark, df, all_areas, args.time_threshold_seconds)
+    alerts_df, logs_df = process_vehicle_intersections(spark, df, all_areas, args.time_threshold_seconds,processing_timestamp)
     df.unpersist()
     # --- Send Results to Kafka ---
     # Send detailed logs
