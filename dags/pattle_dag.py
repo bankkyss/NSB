@@ -31,7 +31,7 @@ import os
 SCRIPT_PATH = "/opt/bitnami/airflow/jobs/python/vehicle_graph_analysis.py"
 
 # Connection ID ของ Spark Master ใน Airflow
-SPARK_CONN_ID = "spark_default"
+SPARK_CONN_ID = "spark"
 
 # Connection ID ของ Database ใน Airflow
 POSTGRES_CONN_ID = "postgres_lpr_db"
