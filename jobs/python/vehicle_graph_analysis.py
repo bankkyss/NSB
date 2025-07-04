@@ -30,6 +30,8 @@ def parse_arguments():
     # Kafka parameters
     parser.add_argument('--kafka-brokers', type=str, required=True, help='Kafka brokers')
     parser.add_argument('--kafka-alerts-topic', type=str, default='alerts_topic', help='Kafka alerts topic')
+    # ---- ADD THIS LINE BACK ----
+    parser.add_argument('--kafka-log-event-topic', type=str, default='log_event_topic', help='Kafka log event topic (accepted for compatibility, but not used)')
     
     # Analysis parameters
     parser.add_argument('--lookback-hours', type=int, default=24, help='Hours to look back for data')
@@ -148,7 +150,6 @@ def main():
                 camera_ids_sql_format = ", ".join([f"'{cam_id}'" for cam_id in camera_ids])
                 camera_filter = f" AND camera_id IN ({camera_ids_sql_format})"
 
-            # --- CHANGE 1: Select all necessary columns for the final alert ---
             dbtable_query = (
                 f"(SELECT car_id, license_plate, province, vehicle_brand, vehicle_brand_model, "
                 f"vehicle_color, vehicle_body_type, vehicle_brand_year, camera_name, camera_id, "
@@ -180,7 +181,7 @@ def main():
                     continue
                 logger.info(f"Loaded {record_count} records for rule '{name}'.")
 
-                # --- CHANGE 2: Prepare simplified DataFrame for graph processing ---
+                # Prepare simplified DataFrame for graph processing
                 df = df_full.select("license_plate", "camera_name", "event_time") \
                             .withColumn("timestamp_utc", unix_timestamp(col("event_time")))
 
@@ -247,16 +248,12 @@ def main():
                     continue
                 
                 logger.info(f"Found {num_groups_with_multiple} groups containing vehicles of interest for rule '{name}'. Preparing alerts.")
-
-                # --- CHANGE 3: New alert generation logic ---
                 
-                # 1. Get all vehicles from the interesting groups
+                # --- New alert generation logic ---
+                
                 all_vehicles_in_groups = groups_with_interest.select(col("component"), explode(col("vehicles")).alias("license_plate"))
-
-                # 2. Join with full event data
                 detailed_group_events = all_vehicles_in_groups.join(df_full, "license_plate", "inner")
 
-                # 3. Define the structure for the nested events_data list
                 event_struct = struct(
                     "car_id", "license_plate", "province", "vehicle_brand", "vehicle_brand_model",
                     "vehicle_color", "vehicle_body_type", "vehicle_brand_year", "camera_name", "camera_id",
@@ -266,7 +263,6 @@ def main():
                     date_format(to_timestamp("created_at"), "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'").alias("created_at")
                 )
 
-                # 4. Aggregate all data at the group (component) level
                 component_alerts = detailed_group_events.groupBy("component").agg(
                     collect_list("camera_id").alias("cameras"),
                     collect_list("car_id").alias("car_id_list"),
@@ -285,11 +281,9 @@ def main():
                     collect_list(event_struct).alias("events_data")
                 )
                 
-                # 5. Identify the specific vehicles of interest that should trigger an alert
                 trigger_vehicles = all_vehicles_in_groups.join(df_interest, "license_plate", "inner") \
                                                          .select(col("component"), col("license_plate").alias("triggering_plate"))
 
-                # 6. Join aggregated group data with triggering vehicles to create the final alert
                 final_alerts = trigger_vehicles.join(component_alerts, "component") \
                     .withColumn("area_name", lit(name)) \
                     .withColumn("area_id", lit(rule_id)) \
@@ -305,7 +299,6 @@ def main():
 
                 logger.info(f"Generated {final_alerts.count()} alerts for rule '{name}'.")
                 
-                # 7. Send final alerts to Kafka
                 if args.kafka_brokers:
                     send_to_kafka(spark, final_alerts, args.kafka_brokers, args.kafka_alerts_topic)
 
