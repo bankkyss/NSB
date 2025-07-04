@@ -7,7 +7,7 @@ from pyspark.sql import SparkSession
 from pyspark.sql.functions import (
     col, countDistinct, abs, collect_list, size,
     to_json, struct, unix_timestamp, max as spark_max,
-    current_timestamp
+    current_timestamp, explode, lit, date_format, to_timestamp
 )
 from graphframes import GraphFrame # Ensure GraphFrame is available
 
@@ -30,13 +30,12 @@ def parse_arguments():
     # Kafka parameters
     parser.add_argument('--kafka-brokers', type=str, required=True, help='Kafka brokers')
     parser.add_argument('--kafka-alerts-topic', type=str, default='alerts_topic', help='Kafka alerts topic')
-    parser.add_argument('--kafka-log-event-topic', type=str, default='log_event_topic', help='Kafka log event topic')
     
     # Analysis parameters
     parser.add_argument('--lookback-hours', type=int, default=24, help='Hours to look back for data')
     parser.add_argument('--time-threshold-seconds', type=int, default=300, help='Time threshold in seconds')
     
-    # Redis parameters (with defaults)
+    # Redis parameters
     parser.add_argument('--redis-host', type=str, default='redis-primary', help='Redis host')
     parser.add_argument('--redis-port', type=int, default=6379, help='Redis port')
     parser.add_argument('--redis-password', type=str, default='my_password', help='Redis password')
@@ -47,24 +46,20 @@ def parse_arguments():
 def create_spark_session():
     """Create SparkSession with HDFS configurations for distributed environment"""
     try:
-        # Stop existing SparkSession if any (useful for interactive sessions)
         active_session = SparkSession.getActiveSession()
         if active_session:
             logger.info("Stopping existing SparkSession...")
             active_session.stop()
-            logger.info("Stopped existing SparkSession.")
     except Exception as e:
         logger.warning(f"Error stopping existing SparkSession: {e}")
-        pass # Continue if no active session or error stopping
 
     spark_builder = (
         SparkSession.builder
-        .appName("Vehicle Graph Analysis (Distributed with HDFS)")
+        .appName("Vehicle Graph Analysis (Alert Generation)")
         .config("spark.sql.adaptive.enabled", "true")
         .config("spark.sql.adaptive.coalescePartitions.enabled", "true")
         .config("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
         .config("spark.sql.streaming.forceDeleteTempCheckpointLocation", "true")
-        # HDFS configurations
         .config("spark.hadoop.fs.defaultFS", "hdfs://hadoop-hadoop-hdfs-nn.speak-test.svc.cluster.local:9000")
         .config("spark.sql.warehouse.dir", "hdfs://hadoop-hadoop-hdfs-nn.speak-test.svc.cluster.local:9000/user/spark/warehouse")
     )
@@ -72,90 +67,59 @@ def create_spark_session():
     spark = spark_builder.getOrCreate()
     logger.info("SparkSession created.")
 
-    # --- HDFS Checkpoint Directory for GraphFrames ---
     checkpoint_base_dir_hdfs = "hdfs://hadoop-hadoop-hdfs-nn.speak-test.svc.cluster.local:9000/spark-checkpoints/graphframes"
     checkpoint_dir_hdfs = f"{checkpoint_base_dir_hdfs}/{uuid.uuid4()}"
 
     try:
-        # Ensure HDFS path '/spark-checkpoints/graphframes' exists and is writable.
         spark.sparkContext.setCheckpointDir(checkpoint_dir_hdfs)
         logger.info(f"GraphFrames checkpoint directory set to HDFS: {checkpoint_dir_hdfs}")
     except Exception as e:
-        logger.warning(f"Failed to set HDFS checkpoint directory: {e}")
+        logger.warning(f"Failed to set HDFS checkpoint directory: {e}. Falling back to local.")
         local_fallback_checkpoint_dir = f"/tmp/spark-checkpoints/graphframes-fallback/{uuid.uuid4()}"
-        try:
-            spark.sparkContext.setCheckpointDir(local_fallback_checkpoint_dir)
-            logger.info(f"Falling back to local checkpoint directory: {local_fallback_checkpoint_dir}")
-            logger.warning("Using local checkpointing may impact GraphFrames performance and reliability in a distributed cluster.")
-        except Exception as local_e:
-            logger.error(f"Failed to set even local fallback checkpoint directory: {local_e}")
-            logger.warning("Continuing without a reliable checkpoint directory. GraphFrames might fail on complex operations.")
+        spark.sparkContext.setCheckpointDir(local_fallback_checkpoint_dir)
+        logger.info(f"Using local checkpoint directory: {local_fallback_checkpoint_dir}")
 
     spark.sparkContext.setLogLevel("WARN")
-    logger.info("SparkSession configured with HDFS and checkpoint directory.")
     return spark
 
 def get_rule_data(redis_host, redis_port, redis_password, redis_pattern):
-    """Get rule data from Redis with configurable parameters"""
+    """Get rule data from Redis"""
     try:
-        redis_client = redis.Redis(
-            host=redis_host,
-            port=redis_port,
-            password=redis_password,
-            decode_responses=True
-        )
-        
-        rule = []
+        redis_client = redis.Redis(host=redis_host, port=redis_port, password=redis_password, decode_responses=True)
+        rules = []
         # Add default rule
-        rule.append({
-            "rule_id": "default_rule",
-            "name": "default_rule",
-            "number_camera": 3,
-            "time_range": 180,
-            "camera_ids": []
-        })
+        rules.append({"rule_id": "default_rule", "name": "default_rule", "number_camera": 3, "time_range": 180, "camera_ids": []})
         
         logger.info(f"Scanning Redis for keys matching pattern: '{redis_pattern}'")
         for key in redis_client.scan_iter(match=redis_pattern, count=1000):
             try:
                 payload_str = redis_client.get(key)
-                if not payload_str:
-                    logger.warning(f"Key '{key}' has no payload. Skipping.")
-                    continue
+                if not payload_str: continue
                 payload = json.loads(payload_str)
-                id = payload.get("id")
-                name = payload.get("name")
-                number_camera = payload.get("number_camera")
-                time_range = payload.get("time_range")
-                camera_ids = payload.get("camera_id", [])
-
-                if id and name and number_camera and time_range and camera_ids:
-                    rule.append({
-                        "rule_id": id,
-                        "name": name,
-                        "number_camera": number_camera,
-                        "time_range": time_range,
-                        "camera_ids": camera_ids
+                if all(k in payload for k in ["id", "name", "number_camera", "time_range", "camera_id"]):
+                    rules.append({
+                        "rule_id": payload["id"], "name": payload["name"],
+                        "number_camera": payload["number_camera"], "time_range": payload["time_range"],
+                        "camera_ids": payload["camera_id"]
                     })
                 else:
                     logger.warning(f"Incomplete data for key '{key}'. Skipping.")
-            except json.JSONDecodeError as e:
-                logger.error(f"Invalid JSON for key {key}: {e}")
-            except Exception as e:
+            except (json.JSONDecodeError, Exception) as e:
                 logger.error(f"Error processing key {key}: {e}")
     except redis.exceptions.RedisError as e:
         logger.error(f"Redis connection error: {e}")
         return []
-        
-    logger.info(f"Successfully loaded {len(rule)} pattern configurations from Redis.")
-    return rule
+    logger.info(f"Successfully loaded {len(rules)} pattern configurations from Redis.")
+    return rules
 
 def send_to_kafka(spark, df, kafka_brokers, kafka_topic):
     """Send DataFrame to Kafka topic"""
+    if df.rdd.isEmpty():
+        logger.info(f"DataFrame is empty. Nothing to send to Kafka topic '{kafka_topic}'.")
+        return
     try:
         logger.info(f"Attempting to send data to Kafka topic '{kafka_topic}'...")
         kafka_output_df = df.select(to_json(struct("*")).alias("value"))
-        
         (kafka_output_df.write
             .format("kafka")
             .option("kafka.bootstrap.servers", kafka_brokers)
@@ -167,272 +131,200 @@ def send_to_kafka(spark, df, kafka_brokers, kafka_topic):
 
 def main():
     """Main execution function"""
-    # Parse command line arguments
     args = parse_arguments()
-    
-    # Log the received parameters
-    logger.info("Received parameters:")
-    logger.info(f"  PostgreSQL: {args.postgres_host}:{args.postgres_port}/{args.postgres_db}")
-    logger.info(f"  Kafka: {args.kafka_brokers}")
-    logger.info(f"  Lookback hours: {args.lookback_hours}")
-    logger.info(f"  Time threshold: {args.time_threshold_seconds} seconds")
-    logger.info(f"  Redis: {args.redis_host}:{args.redis_port}")
+    logger.info(f"Received parameters: PG={args.postgres_host}, Kafka={args.kafka_brokers}, Lookback={args.lookback_hours}h")
     
     spark = None
     try:
         spark = create_spark_session()
-        logger.info("SparkSession created successfully for main execution.")
-
         jdbc_url = f"jdbc:postgresql://{args.postgres_host}:{args.postgres_port}/{args.postgres_db}"
-
-        # Get rule data from Redis
         list_data = get_rule_data(args.redis_host, args.redis_port, args.redis_password, args.redis_pattern)
         
-        for i in list_data:
-            rule_id = i["rule_id"]
-            name = i["name"]
-            number_camera = i["number_camera"]
-            time_range = i["time_range"]
-            camera_ids = i["camera_ids"]
+        for rule in list_data:
+            rule_id, name, number_camera, time_range, camera_ids = rule.values()
             
-            # Handle empty camera_ids for default rule
-            if not camera_ids:
-                logger.info(f"No specific camera IDs for rule '{name}', processing all cameras.")
-                camera_filter = ""
-            else:
+            camera_filter = ""
+            if camera_ids:
                 camera_ids_sql_format = ", ".join([f"'{cam_id}'" for cam_id in camera_ids])
                 camera_filter = f" AND camera_id IN ({camera_ids_sql_format})"
 
-            # Prepare SQL query
-            if args.lookback_hours:
-                dbtable_query = (
-                    f"(SELECT license_plate, camera_name, event_time "
-                    f" FROM {args.postgres_table} "
-                    f" WHERE event_time >= NOW() - INTERVAL '{args.lookback_hours} hours'{camera_filter}"
-                    f") AS filtered_data"
-                )
-                logger.info(f"Loading last {args.lookback_hours}h of data for rule '{name}'.")
-            else:
-                dbtable_query = (
-                    f"(SELECT license_plate, camera_name, event_time "
-                    f" FROM {args.postgres_table} "
-                    f" WHERE 1=1{camera_filter}) AS all_data"
-                )
-                logger.info(f"Loading all data for rule '{name}'.")
+            # --- CHANGE 1: Select all necessary columns for the final alert ---
+            dbtable_query = (
+                f"(SELECT car_id, license_plate, province, vehicle_brand, vehicle_brand_model, "
+                f"vehicle_color, vehicle_body_type, vehicle_brand_year, camera_name, camera_id, "
+                f"event_time, event_date, gps_latitude, gps_longitude, created_at "
+                f" FROM {args.postgres_table} "
+                f" WHERE event_time >= NOW() - INTERVAL '{args.lookback_hours} hours'{camera_filter}"
+                f") AS filtered_data"
+            )
+            logger.info(f"Executing query for rule '{name}' with {args.lookback_hours}h lookback.")
 
-            # Load data from PostgreSQL
             try:
-                df = (
+                # Load full data for alert creation
+                df_full = (
                     spark.read.format("jdbc")
                     .option("url", jdbc_url)
                     .option("dbtable", dbtable_query)
                     .option("user", args.postgres_user)
                     .option("password", args.postgres_password)
                     .option("driver", "org.postgresql.Driver")
-                    .option("fetchsize", "1000")
-                    .option("numPartitions", "4")
+                    .option("fetchsize", "10000")
+                    .option("numPartitions", "8")
                     .load()
                 )
-
-                df = df.withColumn("timestamp_utc", unix_timestamp(col("event_time"))).drop("event_time")
+                df_full.cache()
                 
-                # Cache the dataframe
-                df.cache()
+                record_count = df_full.count()
+                if record_count == 0:
+                    logger.warning(f"No data found for rule '{name}'. Skipping.")
+                    continue
+                logger.info(f"Loaded {record_count} records for rule '{name}'.")
+
+                # --- CHANGE 2: Prepare simplified DataFrame for graph processing ---
+                df = df_full.select("license_plate", "camera_name", "event_time") \
+                            .withColumn("timestamp_utc", unix_timestamp(col("event_time")))
+
+                # Find vehicles with recent activity (vehicles of interest)
                 current_time_unix = unix_timestamp(current_timestamp())
                 df_interest = (
                     df.groupBy("license_plate")
                     .agg(spark_max("timestamp_utc").alias("latest_event_unix"))
                     .filter((current_time_unix - col("latest_event_unix")) <= args.time_threshold_seconds)
                     .select("license_plate")
-                )
-                logger.info(f"Found {df_interest.count()} license plates with recent activity (within {args.time_threshold_seconds} seconds)")
+                ).cache()
                 
-                record_count = df.count()
-                logger.info(f"Loaded {record_count} records successfully.")
-
-                if record_count == 0:
-                    logger.warning("No data found! Check your database connection, table, and lookback hours filter.")
-                    continue  # Continue with next rule instead of returning
-
-                df.printSchema()
-                df.show(5, truncate=False)
+                interest_count = df_interest.count()
+                if interest_count == 0:
+                    logger.info(f"No recently active vehicles (within {args.time_threshold_seconds}s) for rule '{name}'. Skipping.")
+                    continue
+                logger.info(f"Found {interest_count} license plates with recent activity for rule '{name}'.")
 
             except Exception as e:
-                logger.error(f"Failed to load data from PostgreSQL: {str(e)}")
-                continue  # Continue with next rule instead of raising
+                logger.error(f"Failed to load/process data from PostgreSQL for rule '{name}': {str(e)}")
+                continue
 
-            # Process graph analysis
             try:
-                # Rename columns for clarity
-                events = (
-                    df.withColumnRenamed("license_plate", "vehicle")
-                    .withColumnRenamed("camera_name", "point")
-                    .withColumnRenamed("timestamp_utc", "timestamp")
-                )
-
-                # Cache events
+                # --- Graph Analysis (largely unchanged) ---
+                events = df.withColumnRenamed("license_plate", "vehicle") \
+                           .withColumnRenamed("camera_name", "point") \
+                           .withColumnRenamed("timestamp_utc", "timestamp")
                 events.cache()
-                logger.info(f"Processing {events.count()} events for graph analysis.")
 
-                # Build raw edges by co‑occurrence in same point within time threshold
-                e1 = events.alias("a")
-                e2 = events.alias("b")
-
-                raw_edges = (
-                    e1.join(e2,
-                            (col("a.point") == col("b.point")) &
-                            (col("a.vehicle") < col("b.vehicle")) &
-                            (abs(col("a.timestamp") - col("b.timestamp")) <= time_range)
-                    )
-                    .select(
-                        col("a.vehicle").alias("src"),
-                        col("b.vehicle").alias("dst"),
-                        col("a.point").alias("point")
-                    )
-                )
-                logger.info("Raw edges computed.")
-
-                # Filter edges to those with enough common points
-                edges = (
-                    raw_edges.groupBy("src", "dst")
-                            .agg(countDistinct("point").alias("common_points"))
-                            .filter(col("common_points") >= number_camera)
-                )
-
-                # Cache edges
+                e1, e2 = events.alias("a"), events.alias("b")
+                raw_edges = e1.join(e2,
+                                    (col("a.point") == col("b.point")) &
+                                    (col("a.vehicle") < col("b.vehicle")) &
+                                    (abs(col("a.timestamp") - col("b.timestamp")) <= time_range)) \
+                               .select(col("a.vehicle").alias("src"), col("b.vehicle").alias("dst"), col("a.point"))
+                
+                edges = raw_edges.groupBy("src", "dst") \
+                                 .agg(countDistinct("point").alias("common_points")) \
+                                 .filter(col("common_points") >= number_camera)
                 edges.cache()
-                edge_count = edges.count()
-                logger.info(f"Found {edge_count} edges with >= {number_camera} common points.")
 
-                # Create vertices
-                verts = events.select(col("vehicle").alias("id")).distinct()
-                vert_count = verts.count()
-                logger.info(f"Found {vert_count} unique vehicles (vertices).")
-
-                if vert_count == 0:
-                    logger.warning("No vehicles found to create a graph.")
+                if edges.rdd.isEmpty():
+                    logger.warning(f"No edges met the criteria for rule '{name}'. No groups to process.")
                     continue
 
-                g = None
-                if edge_count == 0:
-                    logger.warning("No edges met the criteria. Graph will only contain isolated vertices.")
-                    empty_edges_schema = spark.createDataFrame([], raw_edges.select("src", "dst").schema)
-                    g = GraphFrame(verts, empty_edges_schema)
-                else:
-                    g = GraphFrame(verts, edges.select("src", "dst"))
-                    logger.info("GraphFrame created successfully with vertices and edges.")
-
-                # Compute connected components
-                logger.info("Computing connected components...")
-                try:
-                    cc = g.connectedComponents()
-                    logger.info("Connected components computed successfully.")
-                except Exception as graph_error:
-                    logger.error(f"GraphFrame connectedComponents failed: {graph_error}")
-                    logger.info("Falling back to assigning each vertex to its own component.")
-                    cc = verts.withColumn("component", col("id"))
-
-                logger.info("Connected components result:")
-                cc.show(20, truncate=False)
+                verts = events.select(col("vehicle").alias("id")).distinct()
+                g = GraphFrame(verts, edges.select("src", "dst"))
                 
-                # Original groups (before filtering)
-                groups_all = (
-                    cc.groupBy("component")
-                    .agg(collect_list("id").alias("vehicles"))
-                    .filter(size(col("vehicles")) > 1)
+                cc = g.connectedComponents()
+                
+                groups_all = cc.groupBy("component") \
+                               .agg(collect_list("id").alias("vehicles")) \
+                               .filter(size(col("vehicles")) > 1)
+
+                # Filter for groups containing at least one vehicle of interest
+                groups_exploded = groups_all.select(col("component"), explode(col("vehicles")).alias("vehicle"))
+                groups_with_interest = groups_exploded.join(df_interest.withColumnRenamed("license_plate", "vehicle"), "vehicle", "inner") \
+                                                      .select("component").distinct() \
+                                                      .join(groups_all, "component")
+                
+                num_groups_with_multiple = groups_with_interest.count()
+                if num_groups_with_multiple == 0:
+                    logger.info(f"No groups containing vehicles of interest were found for rule '{name}'.")
+                    continue
+                
+                logger.info(f"Found {num_groups_with_multiple} groups containing vehicles of interest for rule '{name}'. Preparing alerts.")
+
+                # --- CHANGE 3: New alert generation logic ---
+                
+                # 1. Get all vehicles from the interesting groups
+                all_vehicles_in_groups = groups_with_interest.select(col("component"), explode(col("vehicles")).alias("license_plate"))
+
+                # 2. Join with full event data
+                detailed_group_events = all_vehicles_in_groups.join(df_full, "license_plate", "inner")
+
+                # 3. Define the structure for the nested events_data list
+                event_struct = struct(
+                    "car_id", "license_plate", "province", "vehicle_brand", "vehicle_brand_model",
+                    "vehicle_color", "vehicle_body_type", "vehicle_brand_year", "camera_name", "camera_id",
+                    date_format(to_timestamp("event_time"), "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'").alias("event_time"),
+                    date_format(col("event_date"), "yyyy-MM-dd").alias("event_date"),
+                    "gps_latitude", "gps_longitude",
+                    date_format(to_timestamp("created_at"), "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'").alias("created_at")
                 )
 
-                num_groups_all = groups_all.count()
-                logger.info(f"Total number of groups (connected components) with more than one vehicle: {num_groups_all}")
-
-                # Filter groups to include only those with at least one vehicle from df_interest
-                df_interest_vehicles = df_interest.withColumnRenamed("license_plate", "vehicle_of_interest")
-                
-                # Join groups with df_interest to find groups containing vehicles of interest
-                from pyspark.sql.functions import array_contains, explode
-                
-                # Explode the vehicles array to individual rows for easier joining
-                groups_exploded = groups_all.select(
-                    col("component"),
-                    col("vehicles"),
-                    explode(col("vehicles")).alias("vehicle")
+                # 4. Aggregate all data at the group (component) level
+                component_alerts = detailed_group_events.groupBy("component").agg(
+                    collect_list("camera_id").alias("cameras"),
+                    collect_list("car_id").alias("car_id_list"),
+                    collect_list("province").alias("province_list"),
+                    collect_list("vehicle_brand").alias("vehicle_brand_list"),
+                    collect_list("vehicle_brand_model").alias("vehicle_brand_model_list"),
+                    collect_list("vehicle_color").alias("vehicle_color_list"),
+                    collect_list("vehicle_body_type").alias("vehicle_body_type_list"),
+                    collect_list("vehicle_brand_year").alias("vehicle_brand_year_list"),
+                    collect_list("camera_name").alias("camera_name_list"),
+                    collect_list(date_format(to_timestamp("event_time"), "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'")).alias("event_time_list"),
+                    collect_list(date_format(col("event_date"), "yyyy-MM-dd")).alias("event_date_list"),
+                    collect_list("gps_latitude").alias("gps_latitude_list"),
+                    collect_list("gps_longitude").alias("gps_longitude_list"),
+                    collect_list(date_format(to_timestamp("created_at"), "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'")).alias("created_at_list"),
+                    collect_list(event_struct).alias("events_data")
                 )
                 
-                # Join with df_interest to find which groups contain vehicles of interest
-                groups_with_interest = (
-                    groups_exploded
-                    .join(df_interest.withColumnRenamed("license_plate", "vehicle"), "vehicle", "inner")
-                    .select("component", "vehicles")
-                    .distinct()
-                )
-                
-                # Final filtered groups
-                groups = groups_with_interest
-                
-                num_groups_with_multiple = groups.count()
-                logger.info(f"Number of groups with multiple vehicles AND containing at least one vehicle of interest: {num_groups_with_multiple}")
+                # 5. Identify the specific vehicles of interest that should trigger an alert
+                trigger_vehicles = all_vehicles_in_groups.join(df_interest, "license_plate", "inner") \
+                                                         .select(col("component"), col("license_plate").alias("triggering_plate"))
 
-                if num_groups_with_multiple > 0:
-                    logger.info(f"Groups with multiple vehicles that contain vehicles of interest (top 20):")
-                    groups.show(20, truncate=False)
-                    
-                    # Optional: Show which vehicles in each group are of interest
-                    logger.info("Detailed breakdown of groups showing vehicles of interest:")
-                    groups_detail = (
-                        groups_exploded
-                        # 1. Join โดยระบุเงื่อนไขให้ชัดเจน และเปลี่ยนชื่อคอลัมน์จาก df_interest เพื่อไม่ให้ซ้ำซ้อน
-                        .join(df_interest.withColumnRenamed("license_plate", "vehicle_check"),
-                            col("vehicle") == col("vehicle_check"),
-                            "left")
-                        # 2. ตรวจสอบ isNotNull จากคอลัมน์ที่ join เข้ามาใหม่
-                        .withColumn("is_of_interest", col("vehicle_check").isNotNull())
-                        .groupBy("component", "vehicles")
-                        .agg(
-                            collect_list(
-                                struct(
-                                    col("vehicle").alias("vehicle"),
-                                    col("is_of_interest").alias("is_of_interest")
-                                )
-                            ).alias("vehicle_details")
-                        )
-                        .join(groups_with_interest.select("component"), "component", "inner")
+                # 6. Join aggregated group data with triggering vehicles to create the final alert
+                final_alerts = trigger_vehicles.join(component_alerts, "component") \
+                    .withColumn("area_name", lit(name)) \
+                    .withColumn("area_id", lit(rule_id)) \
+                    .withColumn("event_type", lit("area_detection")) \
+                    .withColumnRenamed("triggering_plate", "license_plate") \
+                    .select(
+                        "license_plate", "cameras", "car_id_list", "province_list", "vehicle_brand_list",
+                        "vehicle_brand_model_list", "vehicle_color_list", "vehicle_body_type_list",
+                        "vehicle_brand_year_list", "camera_name_list", "event_time_list", "event_date_list",
+                        "gps_latitude_list", "gps_longitude_list", "created_at_list",
+                        "area_name", "area_id", "event_type", "events_data"
                     )
-                    groups_detail.show(20, truncate=False)
-                    
-                    # Send results to Kafka
-                    if args.kafka_brokers:
-                        # Send to alerts topic
-                        send_to_kafka(spark, groups, args.kafka_brokers, args.kafka_alerts_topic)
-                        
-                        # Optionally send detailed results to log event topic
-                        send_to_kafka(spark, groups_detail, args.kafka_brokers, args.kafka_log_event_topic)
-                    
-                else:
-                    logger.info("No groups found with more than one vehicle that contain vehicles of interest.")
 
-                logger.info(f"Graph analysis completed successfully for rule '{name}'.")
+                logger.info(f"Generated {final_alerts.count()} alerts for rule '{name}'.")
+                
+                # 7. Send final alerts to Kafka
+                if args.kafka_brokers:
+                    send_to_kafka(spark, final_alerts, args.kafka_brokers, args.kafka_alerts_topic)
 
             except Exception as e:
                 logger.error(f"Error during graph processing for rule '{name}': {str(e)}", exc_info=True)
-                # Fallback if graph processing has a major error
-                logger.info("Performing simple fallback: list distinct vehicles if graph analysis failed.")
-                try:
-                    distinct_vehicles = df.select("license_plate").distinct()
-                    logger.info(f"Distinct vehicles found (fallback): {distinct_vehicles.count()}")
-                    distinct_vehicles.show(20, truncate=False)
-                except Exception as fallback_e:
-                    logger.error(f"Error in fallback distinct vehicle listing: {fallback_e}")
+            finally:
+                # Unpersist cached dataframes for the current rule
+                df_full.unpersist()
+                df_interest.unpersist()
+                events.unpersist()
+                edges.unpersist()
 
     except Exception as e:
         logger.error(f"Fatal error in main execution: {str(e)}", exc_info=True)
     finally:
         if spark:
-            try:
-                logger.info("Stopping SparkSession in finally block...")
-                spark.stop()
-                logger.info("SparkSession stopped successfully.")
-            except Exception as e:
-                logger.error(f"Error stopping SparkSession in finally block: {e}")
+            logger.info("Stopping SparkSession...")
+            spark.stop()
+            logger.info("SparkSession stopped.")
 
 if __name__ == "__main__":
     main()
