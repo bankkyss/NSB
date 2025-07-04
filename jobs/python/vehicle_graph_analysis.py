@@ -47,7 +47,6 @@ def parse_arguments():
 
 def create_spark_session():
     """สร้าง SparkSession"""
-    # (โค้ดส่วนนี้เหมือนเดิม ไม่มีการเปลี่ยนแปลง)
     try:
         active_session = SparkSession.getActiveSession()
         if active_session:
@@ -58,7 +57,7 @@ def create_spark_session():
 
     spark_builder = (
         SparkSession.builder
-        .appName("Vehicle Graph Analysis (Simple Alert)")
+        .appName("Vehicle Group Alert") # เปลี่ยนชื่อ App ให้สื่อความหมาย
         .config("spark.sql.adaptive.enabled", "true")
         .config("spark.sql.adaptive.coalescePartitions.enabled", "true")
         .config("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
@@ -83,7 +82,6 @@ def create_spark_session():
 
 def get_rule_data(redis_host, redis_port, redis_password, redis_pattern):
     """ดึงข้อมูล Rule จาก Redis"""
-    # (โค้ดส่วนนี้เหมือนเดิม ไม่มีการเปลี่ยนแปลง)
     try:
         redis_client = redis.Redis(host=redis_host, port=redis_port, password=redis_password, decode_responses=True)
         rules = []
@@ -118,8 +116,6 @@ def send_to_kafka(spark, df, kafka_brokers, kafka_topic):
     try:
         logger.info(f"กำลังพยายามส่งข้อมูลไปยัง Kafka topic '{kafka_topic}'...")
         kafka_output_df = df.select(to_json(struct("*")).alias("value"))
-        
-        # ไม่จำเป็นต้องตั้งค่า max.request.size อีกต่อไป เพราะ message มีขนาดเล็ก
         (kafka_output_df.write
             .format("kafka")
             .option("kafka.bootstrap.servers", kafka_brokers)
@@ -144,13 +140,11 @@ def main():
         for rule in list_data:
             # --- ส่วนของการโหลดข้อมูลและหา df_interest ยังคงเหมือนเดิม ---
             rule_id, name, number_camera, time_range, camera_ids = rule.values()
-            
             camera_filter = ""
             if camera_ids:
                 camera_ids_sql_format = ", ".join([f"'{cam_id}'" for cam_id in camera_ids])
                 camera_filter = f" AND camera_id IN ({camera_ids_sql_format})"
 
-            # เรายังคงต้องดึง camera_id และ event_time เพื่อใช้ในการคำนวณ
             dbtable_query = (
                 f"(SELECT license_plate, camera_id, camera_name, event_time "
                 f" FROM {args.postgres_table} "
@@ -168,7 +162,6 @@ def main():
                 logger.info(f"โหลดข้อมูล {df_full.count()} records สำหรับ rule '{name}' สำเร็จ")
 
                 df = df_full.select("license_plate", "camera_name", "event_time").withColumn("timestamp_utc", unix_timestamp(col("event_time")))
-                
                 current_time_unix = unix_timestamp(current_timestamp())
                 df_interest = df.groupBy("license_plate").agg(spark_max("timestamp_utc").alias("latest_event_unix")).filter((current_time_unix - col("latest_event_unix")) <= args.time_threshold_seconds).select("license_plate").cache()
                 
@@ -202,28 +195,23 @@ def main():
                 logger.info(f"พบ {groups_with_interest.count()} กลุ่มที่น่าสนใจสำหรับ rule '{name}'. กำลังเตรียมสร้าง Alerts")
                 
                 # =================================================================
-                # ===== แก้ไขส่วนการสร้าง ALERT ให้เป็นรูปแบบใหม่ง่ายๆ ตรงนี้ =====
+                # ===== แก้ไขส่วนการสร้าง ALERT ให้เป็นรูปแบบ "1 alert ต่อ 1 กลุ่ม" =====
                 # =================================================================
 
                 # 1. นำรายชื่อรถทั้งหมดในกลุ่มที่น่าสนใจ มา join กับข้อมูลดิบ (df_full)
                 all_vehicles_in_groups = groups_with_interest.select(col("component"), explode(col("vehicles")).alias("license_plate"))
                 detailed_group_events = all_vehicles_in_groups.join(df_full, "license_plate", "inner")
 
-                # 2. รวบรวมข้อมูลของแต่ละกลุ่มเพื่อหา เวลาเริ่มต้น, เวลาสิ้นสุด, และรายชื่อกล้อง
-                aggregated_group_summary = detailed_group_events.groupBy("component").agg(
+                # 2. รวบรวมข้อมูลในระดับของกลุ่ม (component) ให้เป็นรูปแบบสุดท้าย
+                #    เราจะได้ 1 แถว ต่อ 1 กลุ่ม
+                final_alerts = detailed_group_events.groupBy("component").agg(
+                    collect_set("license_plate").alias("license_plate"), # ใช้ collect_set เพื่อเอารายชื่อรถที่ไม่ซ้ำ
                     spark_min("event_time").alias("start_time"),
                     spark_max("event_time").alias("end_time"),
-                    collect_set("camera_id").alias("cameras") # ใช้ collect_set เพื่อเอากล้องที่ไม่ซ้ำ
+                    collect_set("camera_id").alias("cameras")
                 )
 
-                # 3. หารถที่เป็นตัวจุดชนวน (trigger) ของแต่ละกลุ่ม
-                trigger_vehicles = all_vehicles_in_groups.join(df_interest, "license_plate", "inner") \
-                                                         .select(col("component"), col("license_plate"))
-
-                # 4. นำข้อมูลที่รวบรวมไว้ของกลุ่ม มา join กับรถที่เป็นตัวจุดชนวน
-                final_alerts = trigger_vehicles.join(aggregated_group_summary, "component")
-
-                # 5. จัดรูปแบบเวลาและเลือกคอลัมน์สุดท้ายสำหรับส่งไป Kafka
+                # 3. จัดรูปแบบเวลาและเลือกคอลัมน์สุดท้ายสำหรับส่งไป Kafka
                 final_alerts = final_alerts.select(
                     col("license_plate"),
                     date_format(col("start_time"), "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'").alias("start_time"),
@@ -231,7 +219,7 @@ def main():
                     col("cameras")
                 )
                 
-                logger.info(f"สร้าง Alerts รูปแบบใหม่ทั้งหมด {final_alerts.count()} รายการสำหรับ rule '{name}'")
+                logger.info(f"สร้าง Group Alerts ทั้งหมด {final_alerts.count()} รายการสำหรับ rule '{name}'")
                 
                 if args.kafka_brokers:
                     send_to_kafka(spark, final_alerts, args.kafka_brokers, args.kafka_alerts_topic)
