@@ -28,7 +28,7 @@ import os
 # ค่าคงที่สำหรับ DAG - สามารถปรับเปลี่ยนได้ตามสภาพแวดล้อม
 # ---------------------------------------------------------------------------
 # ตำแหน่งของสคริปต์ PySpark ที่จะรัน
-SCRIPT_PATH = "/opt/bitnami/airflow/jobs/python/vehicle_graph_analysis.py"
+SCRIPT_PATH = "/airflow-git/NSB.git/jobs/python/vehicle_graph_analysis.py"
 
 # Connection ID ของ Spark Master ใน Airflow
 SPARK_CONN_ID = "spark"
