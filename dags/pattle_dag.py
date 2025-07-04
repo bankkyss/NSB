@@ -35,7 +35,7 @@ SPARK_CONN_ID = "spark"
 
 # Connection ID ของ Database ใน Airflow
 POSTGRES_CONN_ID = "postgres_lpr_db"
-
+REDIS_CONN_ID = "redis_main"
 # เวอร์ชัน PySpark ที่คาดหวัง
 PYSPARK_EXPECTED_VERSION = "3.5.5"
 
@@ -98,6 +98,7 @@ def check_spark_cluster_health() -> None:
 # ---------------------------------------------------------------------------
 try:
     pg_conn = BaseHook.get_connection(POSTGRES_CONN_ID)
+    redis_conn = BaseHook.get_connection(REDIS_CONN_ID)
     
     kafka_brokers = Variable.get("kafka_brokers", "kafka.kafka.svc.cluster.local:9092")
     kafka_alerts_topic = Variable.get("kafka_alerts_topic", "alearts_topic")
@@ -112,6 +113,9 @@ try:
         "--postgres-user", pg_conn.login,
         "--postgres-password", pg_conn.password,
         "--postgres-table", "vehicle_events",
+        "--redis-host", redis_conn.host,
+        "--redis-port", str(redis_conn.port),
+        "--redis-password", redis_conn.password,
         "--kafka-brokers", kafka_brokers,
         "--kafka-alerts-topic", kafka_alerts_topic,
         "--kafka-log-event-topic", kafka_log_event_topic,
