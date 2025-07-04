@@ -168,24 +168,24 @@ with DAG(
         name="vehicle_graph_analysis_{{ ds_nodash }}_{{ ts_nodash }}",
         
         # --- การปรับแต่งประสิทธิภาพ Spark สำหรับ Graph Analysis ---
-        total_executor_cores=10,
+        # total_executor_cores=10,
         
         # พารามิเตอร์สำหรับแบ่งสรร 10 Cores ที่ได้มา
         num_executors=2,
-        executor_cores=5,
+        executor_cores=7,
         executor_memory="10g",
         driver_memory="10g",
         
         # --- Spark configurations เพิ่มเติม ---
         conf={
             # การกำหนดพื้นฐาน
-            # "spark.driver.host": spark_driver_ip,
+            "spark.driver.host": spark_driver_ip,
             "spark.driver.cores": "1",
             "spark.driver.bindAddress": "0.0.0.0",
             "spark.dynamicAllocation.enabled": "false",
             
             # การตั้งค่าประสิทธิภาพสำหรับ GraphFrames
-            "spark.sql.adaptive.enabled": "true",
+            "spark.sql.adaptive.enabled": "false",
             "spark.sql.adaptive.coalescePartitions.enabled": "true",
             "spark.driver.maxResultSize": "2g",
             "spark.sql.maxPlanStringLength": "10485760",
