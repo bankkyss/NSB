@@ -30,7 +30,6 @@ def parse_arguments():
     # Kafka parameters
     parser.add_argument('--kafka-brokers', type=str, required=True, help='Kafka brokers')
     parser.add_argument('--kafka-alerts-topic', type=str, default='alerts_topic', help='Kafka alerts topic')
-    # ---- ADD THIS LINE BACK ----
     parser.add_argument('--kafka-log-event-topic', type=str, default='log_event_topic', help='Kafka log event topic (accepted for compatibility, but not used)')
     
     # Analysis parameters
@@ -89,7 +88,6 @@ def get_rule_data(redis_host, redis_port, redis_password, redis_pattern):
     try:
         redis_client = redis.Redis(host=redis_host, port=redis_port, password=redis_password, decode_responses=True)
         rules = []
-        # Add default rule
         rules.append({"rule_id": "default_rule", "name": "default_rule", "number_camera": 3, "time_range": 180, "camera_ids": []})
         
         logger.info(f"Scanning Redis for keys matching pattern: '{redis_pattern}'")
@@ -122,6 +120,11 @@ def send_to_kafka(spark, df, kafka_brokers, kafka_topic):
     try:
         logger.info(f"Attempting to send data to Kafka topic '{kafka_topic}'...")
         kafka_output_df = df.select(to_json(struct("*")).alias("value"))
+        
+        # --- OPTIONAL FIX: If you cannot change the script, you could add this option.
+        # --- But changing the script is better.
+        # .option("kafka.max.request.size", "6000000") # Set to ~6MB
+
         (kafka_output_df.write
             .format("kafka")
             .option("kafka.bootstrap.servers", kafka_brokers)
@@ -129,7 +132,9 @@ def send_to_kafka(spark, df, kafka_brokers, kafka_topic):
             .save())
         logger.info(f"Successfully sent data to Kafka topic '{kafka_topic}'.")
     except Exception as kafka_e:
-        logger.error(f"Error sending data to Kafka: {str(kafka_e)}")
+        logger.error(f"Error sending data to Kafka: {str(kafka_e)}", exc_info=True)
+        # Raise the exception to make the Spark job fail clearly
+        raise kafka_e
 
 def main():
     """Main execution function"""
@@ -161,7 +166,6 @@ def main():
             logger.info(f"Executing query for rule '{name}' with {args.lookback_hours}h lookback.")
 
             try:
-                # Load full data for alert creation
                 df_full = (
                     spark.read.format("jdbc")
                     .option("url", jdbc_url)
@@ -175,17 +179,14 @@ def main():
                 )
                 df_full.cache()
                 
-                record_count = df_full.count()
-                if record_count == 0:
+                if df_full.rdd.isEmpty():
                     logger.warning(f"No data found for rule '{name}'. Skipping.")
                     continue
-                logger.info(f"Loaded {record_count} records for rule '{name}'.")
+                logger.info(f"Loaded {df_full.count()} records for rule '{name}'.")
 
-                # Prepare simplified DataFrame for graph processing
                 df = df_full.select("license_plate", "camera_name", "event_time") \
                             .withColumn("timestamp_utc", unix_timestamp(col("event_time")))
 
-                # Find vehicles with recent activity (vehicles of interest)
                 current_time_unix = unix_timestamp(current_timestamp())
                 df_interest = (
                     df.groupBy("license_plate")
@@ -194,18 +195,16 @@ def main():
                     .select("license_plate")
                 ).cache()
                 
-                interest_count = df_interest.count()
-                if interest_count == 0:
+                if df_interest.rdd.isEmpty():
                     logger.info(f"No recently active vehicles (within {args.time_threshold_seconds}s) for rule '{name}'. Skipping.")
                     continue
-                logger.info(f"Found {interest_count} license plates with recent activity for rule '{name}'.")
+                logger.info(f"Found {df_interest.count()} license plates with recent activity for rule '{name}'.")
 
             except Exception as e:
                 logger.error(f"Failed to load/process data from PostgreSQL for rule '{name}': {str(e)}")
                 continue
 
             try:
-                # --- Graph Analysis (largely unchanged) ---
                 events = df.withColumnRenamed("license_plate", "vehicle") \
                            .withColumnRenamed("camera_name", "point") \
                            .withColumnRenamed("timestamp_utc", "timestamp")
@@ -236,33 +235,23 @@ def main():
                                .agg(collect_list("id").alias("vehicles")) \
                                .filter(size(col("vehicles")) > 1)
 
-                # Filter for groups containing at least one vehicle of interest
                 groups_exploded = groups_all.select(col("component"), explode(col("vehicles")).alias("vehicle"))
                 groups_with_interest = groups_exploded.join(df_interest.withColumnRenamed("license_plate", "vehicle"), "vehicle", "inner") \
                                                       .select("component").distinct() \
                                                       .join(groups_all, "component")
                 
-                num_groups_with_multiple = groups_with_interest.count()
-                if num_groups_with_multiple == 0:
+                if groups_with_interest.rdd.isEmpty():
                     logger.info(f"No groups containing vehicles of interest were found for rule '{name}'.")
                     continue
                 
-                logger.info(f"Found {num_groups_with_multiple} groups containing vehicles of interest for rule '{name}'. Preparing alerts.")
-                
-                # --- New alert generation logic ---
+                logger.info(f"Found {groups_with_interest.count()} groups containing vehicles of interest for rule '{name}'. Preparing alerts.")
                 
                 all_vehicles_in_groups = groups_with_interest.select(col("component"), explode(col("vehicles")).alias("license_plate"))
                 detailed_group_events = all_vehicles_in_groups.join(df_full, "license_plate", "inner")
 
-                event_struct = struct(
-                    "car_id", "license_plate", "province", "vehicle_brand", "vehicle_brand_model",
-                    "vehicle_color", "vehicle_body_type", "vehicle_brand_year", "camera_name", "camera_id",
-                    date_format(to_timestamp("event_time"), "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'").alias("event_time"),
-                    date_format(col("event_date"), "yyyy-MM-dd").alias("event_date"),
-                    "gps_latitude", "gps_longitude",
-                    date_format(to_timestamp("created_at"), "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'").alias("created_at")
-                )
+                # --- CHANGE 1: REMOVE event_struct DEFINITION ---
 
+                # Aggregate all data at the group (component) level
                 component_alerts = detailed_group_events.groupBy("component").agg(
                     collect_list("camera_id").alias("cameras"),
                     collect_list("car_id").alias("car_id_list"),
@@ -277,8 +266,8 @@ def main():
                     collect_list(date_format(col("event_date"), "yyyy-MM-dd")).alias("event_date_list"),
                     collect_list("gps_latitude").alias("gps_latitude_list"),
                     collect_list("gps_longitude").alias("gps_longitude_list"),
-                    collect_list(date_format(to_timestamp("created_at"), "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'")).alias("created_at_list"),
-                    collect_list(event_struct).alias("events_data")
+                    collect_list(date_format(to_timestamp("created_at"), "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'")).alias("created_at_list")
+                    # --- CHANGE 2: REMOVE collect_list for events_data ---
                 )
                 
                 trigger_vehicles = all_vehicles_in_groups.join(df_interest, "license_plate", "inner") \
@@ -290,11 +279,12 @@ def main():
                     .withColumn("event_type", lit("area_detection")) \
                     .withColumnRenamed("triggering_plate", "license_plate") \
                     .select(
+                        # --- CHANGE 3: REMOVE "events_data" FROM THE FINAL SELECTION ---
                         "license_plate", "cameras", "car_id_list", "province_list", "vehicle_brand_list",
                         "vehicle_brand_model_list", "vehicle_color_list", "vehicle_body_type_list",
                         "vehicle_brand_year_list", "camera_name_list", "event_time_list", "event_date_list",
                         "gps_latitude_list", "gps_longitude_list", "created_at_list",
-                        "area_name", "area_id", "event_type", "events_data"
+                        "area_name", "area_id", "event_type"
                     )
 
                 logger.info(f"Generated {final_alerts.count()} alerts for rule '{name}'.")
