@@ -188,7 +188,7 @@ with DAG(
             "spark.sql.adaptive.enabled": "false",
             "spark.sql.adaptive.coalescePartitions.enabled": "true",
             "spark.driver.maxResultSize": "2g",
-            "spark.sql.maxPlanStringLength": "10485760",
+            "spark.sql.maxPlanStringLength": "20971520",
             "spark.serializer": "org.apache.spark.serializer.KryoSerializer",
             "spark.sql.streaming.forceDeleteTempCheckpointLocation": "true",
             

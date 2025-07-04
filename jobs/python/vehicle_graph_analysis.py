@@ -380,8 +380,12 @@ def main():
                     logger.info("Detailed breakdown of groups showing vehicles of interest:")
                     groups_detail = (
                         groups_exploded
-                        .join(df_interest.withColumnRenamed("license_plate", "vehicle"), "vehicle", "left")
-                        .withColumn("is_of_interest", col("license_plate").isNotNull())
+                        # 1. Join โดยระบุเงื่อนไขให้ชัดเจน และเปลี่ยนชื่อคอลัมน์จาก df_interest เพื่อไม่ให้ซ้ำซ้อน
+                        .join(df_interest.withColumnRenamed("license_plate", "vehicle_check"),
+                            col("vehicle") == col("vehicle_check"),
+                            "left")
+                        # 2. ตรวจสอบ isNotNull จากคอลัมน์ที่ join เข้ามาใหม่
+                        .withColumn("is_of_interest", col("vehicle_check").isNotNull())
                         .groupBy("component", "vehicles")
                         .agg(
                             collect_list(
