@@ -6,20 +6,21 @@ import argparse
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import (
     col, countDistinct, abs, collect_list, size,
-    to_json, struct, unix_timestamp, max as spark_max,
+    to_json, struct, unix_timestamp,
+    min as spark_min, max as spark_max, collect_set,
     current_timestamp, explode, lit, date_format, to_timestamp
 )
-from graphframes import GraphFrame # Ensure GraphFrame is available
+from graphframes import GraphFrame
 
-# --- Logging Configuration ---
+# --- การตั้งค่า Logging ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 logger = logging.getLogger(__name__)
 
 def parse_arguments():
-    """Parse command line arguments from DAG"""
+    """แยกวิเคราะห์ Arguments ที่ส่งมาจาก Airflow DAG"""
     parser = argparse.ArgumentParser(description='Vehicle Graph Analysis with Spark')
     
-    # PostgreSQL parameters
+    # พารามิเตอร์สำหรับ PostgreSQL
     parser.add_argument('--postgres-host', type=str, required=True, help='PostgreSQL host')
     parser.add_argument('--postgres-port', type=str, default='5432', help='PostgreSQL port')
     parser.add_argument('--postgres-db', type=str, required=True, help='PostgreSQL database name')
@@ -27,36 +28,37 @@ def parse_arguments():
     parser.add_argument('--postgres-password', type=str, required=True, help='PostgreSQL password')
     parser.add_argument('--postgres-table', type=str, default='vehicle_events', help='PostgreSQL table name')
     
-    # Kafka parameters
+    # พารามิเตอร์สำหรับ Kafka
     parser.add_argument('--kafka-brokers', type=str, required=True, help='Kafka brokers')
     parser.add_argument('--kafka-alerts-topic', type=str, default='alerts_topic', help='Kafka alerts topic')
-    parser.add_argument('--kafka-log-event-topic', type=str, default='log_event_topic', help='Kafka log event topic (accepted for compatibility, but not used)')
+    parser.add_argument('--kafka-log-event-topic', type=str, default='log_event_topic', help='Kafka log event topic (ยอมรับค่าเข้ามาเพื่อความเข้ากันได้ แต่ไม่ได้ใช้งาน)')
     
-    # Analysis parameters
-    parser.add_argument('--lookback-hours', type=int, default=24, help='Hours to look back for data')
-    parser.add_argument('--time-threshold-seconds', type=int, default=300, help='Time threshold in seconds')
+    # พารามิเตอร์สำหรับการวิเคราะห์
+    parser.add_argument('--lookback-hours', type=int, default=24, help='จำนวนชั่วโมงที่มองย้อนหลัง')
+    parser.add_argument('--time-threshold-seconds', type=int, default=300, help='กรอบเวลา (วินาที) ที่จะกรอง event ที่น่าสนใจ')
     
-    # Redis parameters
+    # พารามิเตอร์สำหรับ Redis
     parser.add_argument('--redis-host', type=str, default='redis-primary', help='Redis host')
     parser.add_argument('--redis-port', type=int, default=6379, help='Redis port')
     parser.add_argument('--redis-password', type=str, default='my_password', help='Redis password')
-    parser.add_argument('--redis-pattern', type=str, default='petternrecognition:*', help='Redis pattern for keys')
+    parser.add_argument('--redis-pattern', type=str, default='petternrecognition:*', help='Pattern ของ key ใน Redis')
     
     return parser.parse_args()
 
 def create_spark_session():
-    """Create SparkSession with HDFS configurations for distributed environment"""
+    """สร้าง SparkSession"""
+    # (โค้ดส่วนนี้เหมือนเดิม ไม่มีการเปลี่ยนแปลง)
     try:
         active_session = SparkSession.getActiveSession()
         if active_session:
-            logger.info("Stopping existing SparkSession...")
+            logger.info("กำลังหยุด SparkSession ที่มีอยู่...")
             active_session.stop()
     except Exception as e:
-        logger.warning(f"Error stopping existing SparkSession: {e}")
+        logger.warning(f"เกิดข้อผิดพลาดในการหยุด SparkSession: {e}")
 
     spark_builder = (
         SparkSession.builder
-        .appName("Vehicle Graph Analysis (Alert Generation)")
+        .appName("Vehicle Graph Analysis (Simple Alert)")
         .config("spark.sql.adaptive.enabled", "true")
         .config("spark.sql.adaptive.coalescePartitions.enabled", "true")
         .config("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
@@ -64,33 +66,29 @@ def create_spark_session():
         .config("spark.hadoop.fs.defaultFS", "hdfs://hadoop-hadoop-hdfs-nn.speak-test.svc.cluster.local:9000")
         .config("spark.sql.warehouse.dir", "hdfs://hadoop-hadoop-hdfs-nn.speak-test.svc.cluster.local:9000/user/spark/warehouse")
     )
-
     spark = spark_builder.getOrCreate()
-    logger.info("SparkSession created.")
-
+    logger.info("สร้าง SparkSession สำเร็จ")
     checkpoint_base_dir_hdfs = "hdfs://hadoop-hadoop-hdfs-nn.speak-test.svc.cluster.local:9000/spark-checkpoints/graphframes"
     checkpoint_dir_hdfs = f"{checkpoint_base_dir_hdfs}/{uuid.uuid4()}"
-
     try:
         spark.sparkContext.setCheckpointDir(checkpoint_dir_hdfs)
-        logger.info(f"GraphFrames checkpoint directory set to HDFS: {checkpoint_dir_hdfs}")
+        logger.info(f"ตั้งค่า Checkpoint directory ของ GraphFrames ไปที่ HDFS: {checkpoint_dir_hdfs}")
     except Exception as e:
-        logger.warning(f"Failed to set HDFS checkpoint directory: {e}. Falling back to local.")
+        logger.warning(f"ไม่สามารถตั้งค่า HDFS checkpoint directory: {e}. ใช้ local directory แทน")
         local_fallback_checkpoint_dir = f"/tmp/spark-checkpoints/graphframes-fallback/{uuid.uuid4()}"
         spark.sparkContext.setCheckpointDir(local_fallback_checkpoint_dir)
-        logger.info(f"Using local checkpoint directory: {local_fallback_checkpoint_dir}")
-
+        logger.info(f"ใช้ Local checkpoint directory: {local_fallback_checkpoint_dir}")
     spark.sparkContext.setLogLevel("WARN")
     return spark
 
 def get_rule_data(redis_host, redis_port, redis_password, redis_pattern):
-    """Get rule data from Redis"""
+    """ดึงข้อมูล Rule จาก Redis"""
+    # (โค้ดส่วนนี้เหมือนเดิม ไม่มีการเปลี่ยนแปลง)
     try:
         redis_client = redis.Redis(host=redis_host, port=redis_port, password=redis_password, decode_responses=True)
         rules = []
         rules.append({"rule_id": "default_rule", "name": "default_rule", "number_camera": 3, "time_range": 180, "camera_ids": []})
-        
-        logger.info(f"Scanning Redis for keys matching pattern: '{redis_pattern}'")
+        logger.info(f"กำลังค้นหา key ใน Redis ด้วย pattern: '{redis_pattern}'")
         for key in redis_client.scan_iter(match=redis_pattern, count=1000):
             try:
                 payload_str = redis_client.get(key)
@@ -103,43 +101,39 @@ def get_rule_data(redis_host, redis_port, redis_password, redis_pattern):
                         "camera_ids": payload["camera_id"]
                     })
                 else:
-                    logger.warning(f"Incomplete data for key '{key}'. Skipping.")
+                    logger.warning(f"ข้อมูลสำหรับ key '{key}' ไม่สมบูรณ์ จะข้ามไป")
             except (json.JSONDecodeError, Exception) as e:
-                logger.error(f"Error processing key {key}: {e}")
+                logger.error(f"เกิดข้อผิดพลาดในการประมวลผล key {key}: {e}")
     except redis.exceptions.RedisError as e:
-        logger.error(f"Redis connection error: {e}")
+        logger.error(f"เกิดข้อผิดพลาดในการเชื่อมต่อ Redis: {e}")
         return []
-    logger.info(f"Successfully loaded {len(rules)} pattern configurations from Redis.")
+    logger.info(f"โหลดข้อมูล Rule สำเร็จ {len(rules)} รายการจาก Redis")
     return rules
 
 def send_to_kafka(spark, df, kafka_brokers, kafka_topic):
-    """Send DataFrame to Kafka topic"""
+    """ส่ง DataFrame ไปยัง Kafka Topic"""
     if df.rdd.isEmpty():
-        logger.info(f"DataFrame is empty. Nothing to send to Kafka topic '{kafka_topic}'.")
+        logger.info(f"DataFrame ว่างเปล่า ไม่มีการส่งข้อมูลไปยัง Kafka topic '{kafka_topic}'")
         return
     try:
-        logger.info(f"Attempting to send data to Kafka topic '{kafka_topic}'...")
+        logger.info(f"กำลังพยายามส่งข้อมูลไปยัง Kafka topic '{kafka_topic}'...")
         kafka_output_df = df.select(to_json(struct("*")).alias("value"))
         
-        # --- OPTIONAL FIX: If you cannot change the script, you could add this option.
-        # --- But changing the script is better.
-        # .option("kafka.max.request.size", "6000000") # Set to ~6MB
-
+        # ไม่จำเป็นต้องตั้งค่า max.request.size อีกต่อไป เพราะ message มีขนาดเล็ก
         (kafka_output_df.write
             .format("kafka")
             .option("kafka.bootstrap.servers", kafka_brokers)
             .option("topic", kafka_topic)
             .save())
-        logger.info(f"Successfully sent data to Kafka topic '{kafka_topic}'.")
+        logger.info(f"ส่งข้อมูลไปยัง Kafka topic '{kafka_topic}' สำเร็จ")
     except Exception as kafka_e:
-        logger.error(f"Error sending data to Kafka: {str(kafka_e)}", exc_info=True)
-        # Raise the exception to make the Spark job fail clearly
+        logger.error(f"เกิดข้อผิดพลาดในการส่งข้อมูลไป Kafka: {str(kafka_e)}", exc_info=True)
         raise kafka_e
 
 def main():
-    """Main execution function"""
+    """ฟังก์ชันหลักในการทำงาน"""
     args = parse_arguments()
-    logger.info(f"Received parameters: PG={args.postgres_host}, Kafka={args.kafka_brokers}, Lookback={args.lookback_hours}h")
+    logger.info(f"ได้รับพารามิเตอร์: PG={args.postgres_host}, Kafka={args.kafka_brokers}, Lookback={args.lookback_hours}h")
     
     spark = None
     try:
@@ -148,6 +142,7 @@ def main():
         list_data = get_rule_data(args.redis_host, args.redis_port, args.redis_password, args.redis_pattern)
         
         for rule in list_data:
+            # --- ส่วนของการโหลดข้อมูลและหา df_interest ยังคงเหมือนเดิม ---
             rule_id, name, number_camera, time_range, camera_ids = rule.values()
             
             camera_filter = ""
@@ -155,159 +150,107 @@ def main():
                 camera_ids_sql_format = ", ".join([f"'{cam_id}'" for cam_id in camera_ids])
                 camera_filter = f" AND camera_id IN ({camera_ids_sql_format})"
 
+            # เรายังคงต้องดึง camera_id และ event_time เพื่อใช้ในการคำนวณ
             dbtable_query = (
-                f"(SELECT car_id, license_plate, province, vehicle_brand, vehicle_brand_model, "
-                f"vehicle_color, vehicle_body_type, vehicle_brand_year, camera_name, camera_id, "
-                f"event_time, event_date, gps_latitude, gps_longitude, created_at "
+                f"(SELECT license_plate, camera_id, camera_name, event_time "
                 f" FROM {args.postgres_table} "
                 f" WHERE event_time >= NOW() - INTERVAL '{args.lookback_hours} hours'{camera_filter}"
                 f") AS filtered_data"
             )
-            logger.info(f"Executing query for rule '{name}' with {args.lookback_hours}h lookback.")
+            logger.info(f"กำลัง Query ข้อมูลสำหรับ rule '{name}' ย้อนหลัง {args.lookback_hours} ชั่วโมง")
 
             try:
-                df_full = (
-                    spark.read.format("jdbc")
-                    .option("url", jdbc_url)
-                    .option("dbtable", dbtable_query)
-                    .option("user", args.postgres_user)
-                    .option("password", args.postgres_password)
-                    .option("driver", "org.postgresql.Driver")
-                    .option("fetchsize", "10000")
-                    .option("numPartitions", "8")
-                    .load()
-                )
+                df_full = spark.read.format("jdbc").option("url", jdbc_url).option("dbtable", dbtable_query).option("user", args.postgres_user).option("password", args.postgres_password).option("driver", "org.postgresql.Driver").option("fetchsize", "10000").load()
                 df_full.cache()
-                
                 if df_full.rdd.isEmpty():
-                    logger.warning(f"No data found for rule '{name}'. Skipping.")
+                    logger.warning(f"ไม่พบข้อมูลสำหรับ rule '{name}'. Skipping.")
                     continue
-                logger.info(f"Loaded {df_full.count()} records for rule '{name}'.")
+                logger.info(f"โหลดข้อมูล {df_full.count()} records สำหรับ rule '{name}' สำเร็จ")
 
-                df = df_full.select("license_plate", "camera_name", "event_time") \
-                            .withColumn("timestamp_utc", unix_timestamp(col("event_time")))
-
+                df = df_full.select("license_plate", "camera_name", "event_time").withColumn("timestamp_utc", unix_timestamp(col("event_time")))
+                
                 current_time_unix = unix_timestamp(current_timestamp())
-                df_interest = (
-                    df.groupBy("license_plate")
-                    .agg(spark_max("timestamp_utc").alias("latest_event_unix"))
-                    .filter((current_time_unix - col("latest_event_unix")) <= args.time_threshold_seconds)
-                    .select("license_plate")
-                ).cache()
+                df_interest = df.groupBy("license_plate").agg(spark_max("timestamp_utc").alias("latest_event_unix")).filter((current_time_unix - col("latest_event_unix")) <= args.time_threshold_seconds).select("license_plate").cache()
                 
                 if df_interest.rdd.isEmpty():
-                    logger.info(f"No recently active vehicles (within {args.time_threshold_seconds}s) for rule '{name}'. Skipping.")
+                    logger.info(f"ไม่พบยานพาหนะที่น่าสนใจสำหรับ rule '{name}'. Skipping.")
                     continue
-                logger.info(f"Found {df_interest.count()} license plates with recent activity for rule '{name}'.")
-
+                logger.info(f"พบ {df_interest.count()} ป้ายทะเบียนที่น่าสนใจสำหรับ rule '{name}'")
             except Exception as e:
-                logger.error(f"Failed to load/process data from PostgreSQL for rule '{name}': {str(e)}")
+                logger.error(f"ไม่สามารถโหลดข้อมูลจาก PostgreSQL สำหรับ rule '{name}': {str(e)}")
                 continue
 
             try:
-                events = df.withColumnRenamed("license_plate", "vehicle") \
-                           .withColumnRenamed("camera_name", "point") \
-                           .withColumnRenamed("timestamp_utc", "timestamp")
+                # --- ส่วนของการสร้าง Graph ยังคงเหมือนเดิม ---
+                events = df.withColumnRenamed("license_plate", "vehicle").withColumnRenamed("camera_name", "point").withColumnRenamed("timestamp_utc", "timestamp")
                 events.cache()
-
                 e1, e2 = events.alias("a"), events.alias("b")
-                raw_edges = e1.join(e2,
-                                    (col("a.point") == col("b.point")) &
-                                    (col("a.vehicle") < col("b.vehicle")) &
-                                    (abs(col("a.timestamp") - col("b.timestamp")) <= time_range)) \
-                               .select(col("a.vehicle").alias("src"), col("b.vehicle").alias("dst"), col("a.point"))
-                
-                edges = raw_edges.groupBy("src", "dst") \
-                                 .agg(countDistinct("point").alias("common_points")) \
-                                 .filter(col("common_points") >= number_camera)
-                edges.cache()
-
+                raw_edges = e1.join(e2, (col("a.point") == col("b.point")) & (col("a.vehicle") < col("b.vehicle")) & (abs(col("a.timestamp") - col("b.timestamp")) <= time_range)).select(col("a.vehicle").alias("src"), col("b.vehicle").alias("dst"), col("a.point"))
+                edges = raw_edges.groupBy("src", "dst").agg(countDistinct("point").alias("common_points")).filter(col("common_points") >= number_camera).cache()
                 if edges.rdd.isEmpty():
-                    logger.warning(f"No edges met the criteria for rule '{name}'. No groups to process.")
+                    logger.warning(f"ไม่พบ Edge ที่ตรงตามเงื่อนไขสำหรับ rule '{name}'.")
                     continue
-
                 verts = events.select(col("vehicle").alias("id")).distinct()
                 g = GraphFrame(verts, edges.select("src", "dst"))
-                
                 cc = g.connectedComponents()
-                
-                groups_all = cc.groupBy("component") \
-                               .agg(collect_list("id").alias("vehicles")) \
-                               .filter(size(col("vehicles")) > 1)
-
+                groups_all = cc.groupBy("component").agg(collect_list("id").alias("vehicles")).filter(size(col("vehicles")) > 1)
                 groups_exploded = groups_all.select(col("component"), explode(col("vehicles")).alias("vehicle"))
-                groups_with_interest = groups_exploded.join(df_interest.withColumnRenamed("license_plate", "vehicle"), "vehicle", "inner") \
-                                                      .select("component").distinct() \
-                                                      .join(groups_all, "component")
-                
+                groups_with_interest = groups_exploded.join(df_interest.withColumnRenamed("license_plate", "vehicle"), "vehicle", "inner").select("component").distinct().join(groups_all, "component")
                 if groups_with_interest.rdd.isEmpty():
-                    logger.info(f"No groups containing vehicles of interest were found for rule '{name}'.")
+                    logger.info(f"ไม่พบกลุ่มที่มีรถที่น่าสนใจสำหรับ rule '{name}'.")
                     continue
+                logger.info(f"พบ {groups_with_interest.count()} กลุ่มที่น่าสนใจสำหรับ rule '{name}'. กำลังเตรียมสร้าง Alerts")
                 
-                logger.info(f"Found {groups_with_interest.count()} groups containing vehicles of interest for rule '{name}'. Preparing alerts.")
-                
+                # =================================================================
+                # ===== แก้ไขส่วนการสร้าง ALERT ให้เป็นรูปแบบใหม่ง่ายๆ ตรงนี้ =====
+                # =================================================================
+
+                # 1. นำรายชื่อรถทั้งหมดในกลุ่มที่น่าสนใจ มา join กับข้อมูลดิบ (df_full)
                 all_vehicles_in_groups = groups_with_interest.select(col("component"), explode(col("vehicles")).alias("license_plate"))
                 detailed_group_events = all_vehicles_in_groups.join(df_full, "license_plate", "inner")
 
-                # --- CHANGE 1: REMOVE event_struct DEFINITION ---
+                # 2. รวบรวมข้อมูลของแต่ละกลุ่มเพื่อหา เวลาเริ่มต้น, เวลาสิ้นสุด, และรายชื่อกล้อง
+                aggregated_group_summary = detailed_group_events.groupBy("component").agg(
+                    spark_min("event_time").alias("start_time"),
+                    spark_max("event_time").alias("end_time"),
+                    collect_set("camera_id").alias("cameras") # ใช้ collect_set เพื่อเอากล้องที่ไม่ซ้ำ
+                )
 
-                # Aggregate all data at the group (component) level
-                component_alerts = detailed_group_events.groupBy("component").agg(
-                    collect_list("camera_id").alias("cameras"),
-                    collect_list("car_id").alias("car_id_list"),
-                    collect_list("province").alias("province_list"),
-                    collect_list("vehicle_brand").alias("vehicle_brand_list"),
-                    collect_list("vehicle_brand_model").alias("vehicle_brand_model_list"),
-                    collect_list("vehicle_color").alias("vehicle_color_list"),
-                    collect_list("vehicle_body_type").alias("vehicle_body_type_list"),
-                    collect_list("vehicle_brand_year").alias("vehicle_brand_year_list"),
-                    collect_list("camera_name").alias("camera_name_list"),
-                    collect_list(date_format(to_timestamp("event_time"), "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'")).alias("event_time_list"),
-                    collect_list(date_format(col("event_date"), "yyyy-MM-dd")).alias("event_date_list"),
-                    collect_list("gps_latitude").alias("gps_latitude_list"),
-                    collect_list("gps_longitude").alias("gps_longitude_list"),
-                    collect_list(date_format(to_timestamp("created_at"), "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'")).alias("created_at_list")
-                    # --- CHANGE 2: REMOVE collect_list for events_data ---
+                # 3. หารถที่เป็นตัวจุดชนวน (trigger) ของแต่ละกลุ่ม
+                trigger_vehicles = all_vehicles_in_groups.join(df_interest, "license_plate", "inner") \
+                                                         .select(col("component"), col("license_plate"))
+
+                # 4. นำข้อมูลที่รวบรวมไว้ของกลุ่ม มา join กับรถที่เป็นตัวจุดชนวน
+                final_alerts = trigger_vehicles.join(aggregated_group_summary, "component")
+
+                # 5. จัดรูปแบบเวลาและเลือกคอลัมน์สุดท้ายสำหรับส่งไป Kafka
+                final_alerts = final_alerts.select(
+                    col("license_plate"),
+                    date_format(col("start_time"), "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'").alias("start_time"),
+                    date_format(col("end_time"), "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'").alias("end_time"),
+                    col("cameras")
                 )
                 
-                trigger_vehicles = all_vehicles_in_groups.join(df_interest, "license_plate", "inner") \
-                                                         .select(col("component"), col("license_plate").alias("triggering_plate"))
-
-                final_alerts = trigger_vehicles.join(component_alerts, "component") \
-                    .withColumn("area_name", lit(name)) \
-                    .withColumn("area_id", lit(rule_id)) \
-                    .withColumn("event_type", lit("area_detection")) \
-                    .withColumnRenamed("triggering_plate", "license_plate") \
-                    .select(
-                        # --- CHANGE 3: REMOVE "events_data" FROM THE FINAL SELECTION ---
-                        "license_plate", "cameras", "car_id_list", "province_list", "vehicle_brand_list",
-                        "vehicle_brand_model_list", "vehicle_color_list", "vehicle_body_type_list",
-                        "vehicle_brand_year_list", "camera_name_list", "event_time_list", "event_date_list",
-                        "gps_latitude_list", "gps_longitude_list", "created_at_list",
-                        "area_name", "area_id", "event_type"
-                    )
-
-                logger.info(f"Generated {final_alerts.count()} alerts for rule '{name}'.")
+                logger.info(f"สร้าง Alerts รูปแบบใหม่ทั้งหมด {final_alerts.count()} รายการสำหรับ rule '{name}'")
                 
                 if args.kafka_brokers:
                     send_to_kafka(spark, final_alerts, args.kafka_brokers, args.kafka_alerts_topic)
 
             except Exception as e:
-                logger.error(f"Error during graph processing for rule '{name}': {str(e)}", exc_info=True)
+                logger.error(f"เกิดข้อผิดพลาดระหว่างประมวลผล Graph สำหรับ rule '{name}': {str(e)}", exc_info=True)
             finally:
-                # Unpersist cached dataframes for the current rule
                 df_full.unpersist()
                 df_interest.unpersist()
                 events.unpersist()
                 edges.unpersist()
 
     except Exception as e:
-        logger.error(f"Fatal error in main execution: {str(e)}", exc_info=True)
+        logger.error(f"เกิดข้อผิดพลาดร้ายแรงในการทำงานหลัก: {str(e)}", exc_info=True)
     finally:
         if spark:
-            logger.info("Stopping SparkSession...")
+            logger.info("กำลังหยุด SparkSession...")
             spark.stop()
-            logger.info("SparkSession stopped.")
+            logger.info("หยุด SparkSession สำเร็จ")
 
 if __name__ == "__main__":
     main()
