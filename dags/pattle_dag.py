@@ -134,7 +134,7 @@ with DAG(
     dag_id="vehicle_graph_analysis_production",
     description="วิเคราะห์ความสัมพันธ์ของยานพาหนะโดยใช้ GraphFrames และ Spark",
     start_date=datetime(2025, 6, 27),
-    schedule="0 2 * * *",  # รันทุกวันเวลา 02:00 น.
+    schedule="*/10 * * * *",  # รันทุกวันเวลา 02:00 น.
     catchup=False,
     tags=["spark", "graphframes", "vehicle", "production"],
     max_active_runs=1,
