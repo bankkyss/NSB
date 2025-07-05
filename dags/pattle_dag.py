@@ -101,7 +101,7 @@ try:
     redis_conn = BaseHook.get_connection(REDIS_CONN_ID)
     
     kafka_brokers = Variable.get("kafka_brokers", "kafka.kafka.svc.cluster.local:9092")
-    kafka_alerts_topic = Variable.get("kafka_alerts_topic", "alearts_topic")
+    kafka_alerts_topic = Variable.get("kafka_alerts_topic_pattle", "alearts_topic")
     kafka_log_event_topic = Variable.get("kafka_log_event_topic", "log_event_topic")
     lookback_hours = Variable.get("lpr_lookback_hours", "12")
     time_threshold = Variable.get("graph_time_threshold_seconds", "300")
@@ -169,11 +169,11 @@ with DAG(
         
         # --- การปรับแต่งประสิทธิภาพ Spark สำหรับ Graph Analysis ---
         # total_executor_cores=10,
-        
+        total_executor_cores=20, 
         # พารามิเตอร์สำหรับแบ่งสรร 10 Cores ที่ได้มา
         num_executors=2,
         executor_cores=7,
-        executor_memory="10g",
+        executor_memory="25g",
         driver_memory="10g",
         
         # --- Spark configurations เพิ่มเติม ---
