@@ -92,11 +92,12 @@ def get_rule_data(redis_host, redis_port, redis_password, redis_pattern):
         for key in redis_client.scan_iter(match=redis_pattern, count=1000):
             try:
                 payload_str = redis_client.get(key)
+                print(f"payload_str: {payload_str}")
                 if not payload_str: continue
                 payload = json.loads(payload_str)
-                if all(k in payload for k in ["id", "name", "number_camera", "time_range", "camera_id"]):
+                if all(k in payload for k in ["id", "rule_name", "number_camera", "time_range", "camera_id"]):
                     rules.append({
-                        "rule_id": payload["id"], "name": payload["name"],
+                        "rule_id": payload["id"], "name": payload["rule_name"],
                         "number_camera": payload["number_camera"], "time_range": payload["time_range"],
                         "camera_ids": payload["camera_id"]
                     })
