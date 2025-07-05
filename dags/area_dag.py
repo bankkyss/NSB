@@ -175,12 +175,12 @@ with DAG(
         # packages=ALL_PACKAGES, 
         
         # --- การปรับแต่งประสิทธิภาพ Spark ---
-        total_executor_cores=14, 
+        total_executor_cores=20, 
 
         # พารามิเตอร์สำหรับแบ่งสรร 14 Cores ที่ได้มา
-        num_executors=2,
-        executor_cores=7,
-        executor_memory="14g",
+        num_executors=1,
+        executor_cores=14,
+        executor_memory="25g",
         driver_memory="4g",
         
         # --- Spark configurations เพิ่มเติม (แก้ไขจุดนี้) ---
