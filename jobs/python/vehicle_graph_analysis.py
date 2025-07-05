@@ -139,9 +139,9 @@ def main():
         spark = create_spark_session()
         
         processing_timestamp = spark.sql("SELECT current_timestamp()").collect()[0][0]
-        five_minutes_ago_from_start = processing_timestamp - datetime.timedelta(minutes=5)
-        logger.info(f"เวลาที่ใช้ประมวลผล (จาก Spark): {processing_timestamp}. จะกรอง Alert ที่มี end_time หลังจาก: {five_minutes_ago_from_start}")
-
+        # เปลี่ยนชื่อตัวแปรให้สื่อความหมายมากขึ้น
+        alert_time_cutoff = processing_timestamp - datetime.timedelta(seconds=int(args.time_threshold_seconds))
+        logger.info(f"เวลาที่ใช้ประมวลผล (จาก Spark): {processing_timestamp}. จะกรอง Alert ที่มี end_time หลังจาก: {alert_time_cutoff}")
         jdbc_url = f"jdbc:postgresql://{args.postgres_host}:{args.postgres_port}/{args.postgres_db}"
         list_data = get_rule_data(args.redis_host, args.redis_port, args.redis_password, args.redis_pattern)
         
@@ -210,9 +210,9 @@ def main():
                     collect_set("camera_id").alias("cameras")
                 )
                 
-                logger.info(f"กำลังกรอง Alerts โดยใช้เวลาอ้างอิง: {five_minutes_ago_from_start}")
+                logger.info(f"กำลังกรอง Alerts โดยใช้เวลาอ้างอิง: {alert_time_cutoff}")
                 final_alerts_filtered = final_alerts_aggregated.filter(
-                    col("end_time") >= five_minutes_ago_from_start
+                    col("end_time") >= alert_time_cutoff
                 )
 
                 if final_alerts_filtered.rdd.isEmpty():
