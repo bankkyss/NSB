@@ -3,16 +3,18 @@ import uuid
 import redis
 import json
 import argparse
+import datetime
+
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import (
     col, countDistinct, abs, collect_list, size,
-    to_json, struct, unix_timestamp,
+    to_json, struct, unix_timestamp, expr,
     min as spark_min, max as spark_max, collect_set,
     current_timestamp, explode, lit, date_format, to_timestamp
 )
 from graphframes import GraphFrame
 
-# --- การตั้งค่า Logging ---
+# --- ฟังก์ชันอื่นๆ เหมือนเดิม ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 logger = logging.getLogger(__name__)
 
@@ -57,7 +59,7 @@ def create_spark_session():
 
     spark_builder = (
         SparkSession.builder
-        .appName("Vehicle Group Alert") # เปลี่ยนชื่อ App ให้สื่อความหมาย
+        .appName("Vehicle Group Alert")
         .config("spark.sql.adaptive.enabled", "true")
         .config("spark.sql.adaptive.coalescePartitions.enabled", "true")
         .config("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
@@ -126,6 +128,7 @@ def send_to_kafka(spark, df, kafka_brokers, kafka_topic):
         logger.error(f"เกิดข้อผิดพลาดในการส่งข้อมูลไป Kafka: {str(kafka_e)}", exc_info=True)
         raise kafka_e
 
+
 def main():
     """ฟังก์ชันหลักในการทำงาน"""
     args = parse_arguments()
@@ -134,11 +137,15 @@ def main():
     spark = None
     try:
         spark = create_spark_session()
+        
+        processing_timestamp = spark.sql("SELECT current_timestamp()").collect()[0][0]
+        five_minutes_ago_from_start = processing_timestamp - datetime.timedelta(minutes=5)
+        logger.info(f"เวลาที่ใช้ประมวลผล (จาก Spark): {processing_timestamp}. จะกรอง Alert ที่มี end_time หลังจาก: {five_minutes_ago_from_start}")
+
         jdbc_url = f"jdbc:postgresql://{args.postgres_host}:{args.postgres_port}/{args.postgres_db}"
         list_data = get_rule_data(args.redis_host, args.redis_port, args.redis_password, args.redis_pattern)
         
         for rule in list_data:
-            # --- ส่วนของการโหลดข้อมูลและหา df_interest ยังคงเหมือนเดิม ---
             rule_id, name, number_camera, time_range, camera_ids = rule.values()
             camera_filter = ""
             if camera_ids:
@@ -151,7 +158,7 @@ def main():
                 f" WHERE event_time >= NOW() - INTERVAL '{args.lookback_hours} hours'{camera_filter}"
                 f") AS filtered_data"
             )
-            logger.info(f"กำลัง Query ข้อมูลสำหรับ rule '{name}' ย้อนหลัง {args.lookback_hours} ชั่วโมง")
+            logger.info(f"กำลัง Query ข้อมูลสำหรับ rule '{name}' ({rule_id}) ย้อนหลัง {args.lookback_hours} ชั่วโมง")
 
             try:
                 df_full = spark.read.format("jdbc").option("url", jdbc_url).option("dbtable", dbtable_query).option("user", args.postgres_user).option("password", args.postgres_password).option("driver", "org.postgresql.Driver").option("fetchsize", "10000").load()
@@ -174,7 +181,6 @@ def main():
                 continue
 
             try:
-                # --- ส่วนของการสร้าง Graph ยังคงเหมือนเดิม ---
                 events = df.withColumnRenamed("license_plate", "vehicle").withColumnRenamed("camera_name", "point").withColumnRenamed("timestamp_utc", "timestamp")
                 events.cache()
                 e1, e2 = events.alias("a"), events.alias("b")
@@ -194,32 +200,35 @@ def main():
                     continue
                 logger.info(f"พบ {groups_with_interest.count()} กลุ่มที่น่าสนใจสำหรับ rule '{name}'. กำลังเตรียมสร้าง Alerts")
                 
-                # =================================================================
-                # ===== แก้ไขส่วนการสร้าง ALERT ให้เป็นรูปแบบ "1 alert ต่อ 1 กลุ่ม" =====
-                # =================================================================
-
-                # 1. นำรายชื่อรถทั้งหมดในกลุ่มที่น่าสนใจ มา join กับข้อมูลดิบ (df_full)
                 all_vehicles_in_groups = groups_with_interest.select(col("component"), explode(col("vehicles")).alias("license_plate"))
                 detailed_group_events = all_vehicles_in_groups.join(df_full, "license_plate", "inner")
 
-                # 2. รวบรวมข้อมูลในระดับของกลุ่ม (component) ให้เป็นรูปแบบสุดท้าย
-                #    เราจะได้ 1 แถว ต่อ 1 กลุ่ม
-                final_alerts = detailed_group_events.groupBy("component").agg(
-                    collect_set("license_plate").alias("license_plate"), # ใช้ collect_set เพื่อเอารายชื่อรถที่ไม่ซ้ำ
+                final_alerts_aggregated = detailed_group_events.groupBy("component").agg(
+                    collect_set("license_plate").alias("license_plate"),
                     spark_min("event_time").alias("start_time"),
                     spark_max("event_time").alias("end_time"),
                     collect_set("camera_id").alias("cameras")
                 )
+                
+                logger.info(f"กำลังกรอง Alerts โดยใช้เวลาอ้างอิง: {five_minutes_ago_from_start}")
+                final_alerts_filtered = final_alerts_aggregated.filter(
+                    col("end_time") >= five_minutes_ago_from_start
+                )
 
-                # 3. จัดรูปแบบเวลาและเลือกคอลัมน์สุดท้ายสำหรับส่งไป Kafka
-                final_alerts = final_alerts.select(
+                if final_alerts_filtered.rdd.isEmpty():
+                    logger.info(f"ไม่พบกลุ่มที่น่าสนใจหลังจากการกรองเวลาสำหรับ rule '{name}'.")
+                    continue
+
+                # <<< เปลี่ยนแปลง: เพิ่ม lit(rule_id) เข้าไปใน select statement
+                final_alerts = final_alerts_filtered.select(
+                    lit(rule_id).alias("rule_id"), 
                     col("license_plate"),
                     date_format(col("start_time"), "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'").alias("start_time"),
                     date_format(col("end_time"), "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'").alias("end_time"),
                     col("cameras")
                 )
                 
-                logger.info(f"สร้าง Group Alerts ทั้งหมด {final_alerts.count()} รายการสำหรับ rule '{name}'")
+                logger.info(f"สร้าง Group Alerts ทั้งหมด {final_alerts.count()} รายการสำหรับ rule '{name}' (หลังกรองเวลา)")
                 
                 if args.kafka_brokers:
                     send_to_kafka(spark, final_alerts, args.kafka_brokers, args.kafka_alerts_topic)
