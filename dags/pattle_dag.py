@@ -172,7 +172,7 @@ with DAG(
         total_executor_cores=20, 
         # พารามิเตอร์สำหรับแบ่งสรร 10 Cores ที่ได้มา
         num_executors=1,
-        executor_cores=10,
+        executor_cores=15,
         executor_memory="25g",
         driver_memory="10g",
         
