@@ -87,7 +87,7 @@ def get_rule_data(redis_host, redis_port, redis_password, redis_pattern):
     try:
         redis_client = redis.Redis(host=redis_host, port=redis_port, password=redis_password, decode_responses=True)
         rules = []
-        rules.append({"rule_id": "default_rule", "name": "default_rule", "number_camera": 3, "time_range": 180, "camera_ids": []})
+        rules.append({"rule_id": "default_rule", "name": "default_rule", "number_camera": 3, "time_range": 90, "camera_ids": []})
         logger.info(f"กำลังค้นหา key ใน Redis ด้วย pattern: '{redis_pattern}'")
         for key in redis_client.scan_iter(match=redis_pattern, count=1000):
             try:
