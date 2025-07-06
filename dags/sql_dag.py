@@ -13,7 +13,7 @@ SQL_TEST_COMMAND = "SELECT * FROM public.score_event WHERE pk_id='381f69e0-5a3a-
 with DAG(
     dag_id="postgres_test_query_dag",
     start_date=pendulum.datetime(2025, 7, 6, tz="Asia/Bangkok"),
-    schedule_interval=None,  # Set to None as this is for manual testing
+    schedule=" 0 0 * * *",  # Runs daily at midnight
     catchup=False,
     doc_md="""
     ### PostgreSQL Test Query DAG
