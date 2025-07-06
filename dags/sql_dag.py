@@ -20,7 +20,7 @@ with DAG(
     
     This DAG connects to a PostgreSQL database and executes a test SELECT query
     on the `public.score_event` table.
-    Make sure your `postgres_lor_db` connection is configured correctly in the Airflow UI.
+    Make sure your `postgres_lpr_db` connection is configured correctly in the Airflow UI.
     """,
     tags=["postgres", "test"],
 ) as dag:
@@ -29,6 +29,6 @@ with DAG(
     run_test_query = SQLExecuteQueryOperator(
         task_id="test_select_from_score_event",
         # This is the Connection ID from your Airflow UI.
-        conn_id="postgres_lor_db",
+        conn_id="postgres_lpr_db",
         sql=SQL_TEST_COMMAND,
     )
