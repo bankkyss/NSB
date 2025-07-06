@@ -7,13 +7,13 @@ from airflow.providers.common.sql.operators.sql import SQLExecuteQueryOperator
 
 # The SQL command for testing.
 # This query selects a specific record from the public.score_event table.
-SQL_TEST_COMMAND = "SELECT * FROM public.score_event WHERE pk_id='381f69e0-5a3a-11f0-9744-5693fdde0af4';"
+SQL_TEST_COMMAND = "SELECT partman.run_maintenance('public.vehicle_events');"
 
 # Define the DAG
 with DAG(
     dag_id="postgres_test_query_dag",
     start_date=pendulum.datetime(2025, 7, 6, tz="Asia/Bangkok"),
-    schedule=" 0 0 * * *",  # Runs daily at midnight
+    schedule=" 0 */12 * * *",
     catchup=False,
     doc_md="""
     ### PostgreSQL Test Query DAG
@@ -22,7 +22,7 @@ with DAG(
     on the `public.score_event` table.
     Make sure your `postgres_lpr_db` connection is configured correctly in the Airflow UI.
     """,
-    tags=["postgres", "test"],
+    tags=["postgres", "management", "sql"],
 ) as dag:
     
     # Define the task using the SQLExecuteQueryOperator
