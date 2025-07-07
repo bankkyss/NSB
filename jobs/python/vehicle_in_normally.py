@@ -244,7 +244,7 @@ def main():
                 F.struct(
                     "record_uuid", "car_id", "license_plate", "province", "vehicle_brand",
                     "vehicle_color", "camera_name", "camera_id", "event_time", "event_date",
-                    "gps_latitude", "gps_longitude", "created_at", "event_type","distance_km","time_delta_seconds","speed_kmh"
+                    "gps_latitude", "gps_longitude", "created_at", "event_type"
                 )
             ).alias("value")
         )
@@ -274,6 +274,9 @@ def main():
                     F.array("prev_gps_longitude", "gps_longitude").alias("gps_longitude_list"),
                     F.array("prev_created_at", "created_at").alias("created_at_list"),
                     F.lit("ghost_detection").alias("event_type")
+                    F.col("distance_km"),
+                    F.col("time_delta_seconds"),
+                    F.col("speed_kmh"),
                 )
             ).alias("value")
         )
