@@ -187,37 +187,69 @@ def main():
 
     if not high_speed_df.rdd.isEmpty():
         # --- Prepare and Send to Kafka Topics ---
-        log_event_df = high_speed_df.select(
+
+        # ✅ 1. สร้าง DataFrame สำหรับ Log Event (แยกแต่ละ Event เป็นคนละ Record)
+
+        # เลือกคอลัมน์สำหรับ "Event ปัจจุบัน"
+        df_current_event = high_speed_df.select(
+            F.col("record_uuid"),
+            F.col("car_id"),
+            F.col("license_plate"),
+            F.col("province"),
+            F.col("vehicle_brand"),
+            F.col("vehicle_color"),
+            F.col("camera_name"),
+            F.col("camera_id"),
+            F.col("event_time"),
+            F.col("event_date"),
+            F.col("gps_latitude"),
+            F.col("gps_longitude"),
+            F.col("created_at"),
+            F.lit("ghost_detection").alias("event_type")
+        )
+
+        # เลือกคอลัมน์สำหรับ "Event ก่อนหน้า" และเปลี่ยนชื่อคอลัมน์ให้ตรงกัน
+        df_prev_event = high_speed_df.select(
+            F.col("prev_record_uuid").alias("record_uuid"),
+            F.col("prev_car_id").alias("car_id"),
+            F.col("prev_license_plate").alias("license_plate"),
+            F.col("prev_province").alias("province"),
+            F.col("prev_vehicle_brand").alias("vehicle_brand"),
+            F.col("prev_vehicle_color").alias("vehicle_color"),
+            F.col("prev_camera_name").alias("camera_name"),
+            F.col("prev_camera_id").alias("camera_id"),
+            F.col("prev_event_time").alias("event_time"),
+            F.col("prev_event_date").alias("event_date"),
+            F.col("prev_gps_latitude").alias("gps_latitude"),
+            F.col("prev_gps_longitude").alias("gps_longitude"),
+            F.col("prev_created_at").alias("created_at"),
+            F.lit("ghost_detection").alias("event_type")
+        )
+
+        # รวมทั้งสอง DataFrame เข้าด้วยกัน ให้แต่ละ event เป็นคนละแถว
+        unioned_df = df_current_event.unionByName(df_prev_event)
+
+        # สร้าง JSON จาก struct ของแต่ละแถว (ไม่ใช่ array)
+        log_event_df = unioned_df.select(
             F.to_json(
-                F.array(
-                    F.struct(
-                        "record_uuid", # เพิ่มฟิลด์ใหม่
-                        "car_id", "license_plate", "province", "vehicle_brand", "vehicle_brand_model",
-                        "vehicle_color", "vehicle_body_type", "vehicle_brand_year", "camera_name",
-                        "camera_id", "event_time", "event_date", "gps_latitude", "gps_longitude", "created_at"
-                    ),
-                    F.struct(
-                        F.col("prev_record_uuid").alias("record_uuid"), # เพิ่มฟิลด์ใหม่
-                        F.col("prev_car_id").alias("car_id"), F.col("prev_license_plate").alias("license_plate"),
-                        F.col("prev_province").alias("province"), F.col("prev_vehicle_brand").alias("vehicle_brand"),
-                        F.col("prev_vehicle_brand_model").alias("vehicle_brand_model"), F.col("prev_vehicle_color").alias("vehicle_color"),
-                        F.col("prev_vehicle_body_type").alias("vehicle_body_type"), F.col("prev_vehicle_brand_year").alias("vehicle_brand_year"),
-                        F.col("prev_camera_name").alias("camera_name"), F.col("prev_camera_id").alias("camera_id"),
-                        F.col("prev_event_time").alias("event_time"), F.col("prev_event_date").alias("event_date"),
-                        F.col("prev_gps_latitude").alias("gps_latitude"), F.col("prev_gps_longitude").alias("gps_longitude"),
-                        F.col("prev_created_at").alias("created_at"),
-                        F.lit("ghost_detection").alias("event_type")  
-                    )
+                F.struct(
+                    "record_uuid", "car_id", "license_plate", "province", "vehicle_brand",
+                    "vehicle_color", "camera_name", "camera_id", "event_time", "event_date",
+                    "gps_latitude", "gps_longitude", "created_at", "event_type"
                 )
             ).alias("value")
         )
+
+        # ส่งข้อมูล log ทีละ event ไปยัง Kafka
         write_to_kafka(log_event_df, args.kafka_log_event_topic, args.kafka_brokers, logger)
 
+
+        # ✅ 2. สร้าง DataFrame สำหรับ Alert (ยังคงรวมข้อมูลเป็นชุดเดียว)
         alert_event_df = high_speed_df.select(
             F.to_json(
                 F.struct(
                     F.col("license_plate"),
-                    F.array("prev_record_uuid", "record_uuid").alias("record_uuid_list"), # เพิ่มฟิลด์ใหม่
+                    F.array("prev_record_uuid", "record_uuid").alias("record_uuid_list"),
                     F.array("prev_camera_id", "camera_id").alias("cameras"),
                     F.array("prev_car_id", "car_id").alias("car_id_list"),
                     F.array("prev_province", "province").alias("province_list"),
@@ -237,7 +269,7 @@ def main():
             ).alias("value")
         )
         write_to_kafka(alert_event_df, args.kafka_alerts_topic, args.kafka_brokers, logger)
-
+    
     spark.stop()
     logger.info("Spark Session stopped.")
 
