@@ -182,8 +182,8 @@ def main():
 
 
     # --- Filter for High-Speed Events ---
-    high_speed_df = results_df_with_uuid.filter(F.col("speed_kmh") > 180).cache()
-    logger.info(f"Found {high_speed_df.count()} high-speed events (speed > 180 km/h).")
+    high_speed_df = results_df_with_uuid.filter(F.col("speed_kmh") > 250).cache()
+    logger.info(f"Found {high_speed_df.count()} high-speed events (speed > 250 km/h).")
 
     if not high_speed_df.rdd.isEmpty():
         # --- Prepare and Send to Kafka Topics ---
@@ -205,7 +205,8 @@ def main():
                         F.col("prev_camera_name").alias("camera_name"), F.col("prev_camera_id").alias("camera_id"),
                         F.col("prev_event_time").alias("event_time"), F.col("prev_event_date").alias("event_date"),
                         F.col("prev_gps_latitude").alias("gps_latitude"), F.col("prev_gps_longitude").alias("gps_longitude"),
-                        F.col("prev_created_at").alias("created_at")
+                        F.col("prev_created_at").alias("created_at"),
+                        F.lit("ghost_detection").alias("event_type")  
                     )
                 )
             ).alias("value")
@@ -230,7 +231,8 @@ def main():
                     F.array("prev_event_date", "event_date").alias("event_date_list"),
                     F.array("prev_gps_latitude", "gps_latitude").alias("gps_latitude_list"),
                     F.array("prev_gps_longitude", "gps_longitude").alias("gps_longitude_list"),
-                    F.array("prev_created_at", "created_at").alias("created_at_list")
+                    F.array("prev_created_at", "created_at").alias("created_at_list"),
+                    F.lit("ghost_detection").alias("event_type")
                 )
             ).alias("value")
         )
