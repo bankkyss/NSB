@@ -226,6 +226,12 @@ def main():
             F.col("prev_gps_latitude").alias("gps_latitude"),
             F.col("prev_gps_longitude").alias("gps_longitude"),
             F.col("prev_created_at").alias("created_at"),
+            # --- ส่วนที่แก้ไข ---
+            # เพิ่มคอลัมน์ที่ขาดไปโดยกำหนดค่าเป็น NULL เพื่อให้ Schema ตรงกัน
+            F.lit(None).cast(FloatType()).alias("distance_km"),
+            F.lit(None).cast(FloatType()).alias("time_delta_seconds"),
+            F.lit(None).cast(FloatType()).alias("speed_kmh"),
+            # --------------------
             F.lit("ghost_detection").alias("event_type")
         )
 
