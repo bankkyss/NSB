@@ -131,7 +131,7 @@ with DAG(
 
     # ควรดึงค่า IP ของ pod ภายใน task เพื่อให้ได้ค่าล่าสุดเสมอ (สำหรับ Kubernetes)
     # หากรันบน môi trường อื่น อาจต้องใช้วิธีอื่นในการหา IP
-    spark_driver_ip = os.environ.get("POD_IP", "127.0.0.1")
+    spark_driver_ip = os.environ.get("SPARK_DRIVER_POD_IP", "0.0.0.0")
 
     run_spark_job = SparkSubmitOperator(
         task_id="run_vehicle_speed_analysis_job",
