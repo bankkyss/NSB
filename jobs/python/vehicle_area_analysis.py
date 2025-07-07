@@ -319,9 +319,13 @@ def main():
     # Send aggregated alerts
     if not alerts_df.rdd.isEmpty():
         try:
-            alert_count = alerts_df.count()
+            # สร้าง DataFrame ใหม่ที่ไม่มีคอลัมน์ "events_data"
+            alerts_to_send_df = alerts_df.drop("events_data")
+
+            alert_count = alerts_to_send_df.count() # นับจาก DF ที่จะส่งจริง
             logger.info(f"Sending {alert_count} area alerts to Kafka topic '{args.kafka_alerts_topic}'.")
-            (alerts_df.select(to_json(struct("*")).alias("value"))
+
+            (alerts_to_send_df.select(to_json(struct("*")).alias("value")) # ใช้ struct("*") กับ DF ที่ไม่มี events_data แล้ว
                 .write
                 .format("kafka")
                 .option("kafka.bootstrap.servers", args.kafka_brokers)
