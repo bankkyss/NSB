@@ -205,6 +205,9 @@ def main():
             F.col("gps_latitude"),
             F.col("gps_longitude"),
             F.col("created_at"),
+            F.col("distance_km"),
+            F.col("time_delta_seconds"),
+            F.col("speed_kmh"),
             F.lit("ghost_detection").alias("event_type")
         )
 
