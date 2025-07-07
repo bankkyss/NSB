@@ -273,7 +273,7 @@ def main():
                     F.array("prev_gps_latitude", "gps_latitude").alias("gps_latitude_list"),
                     F.array("prev_gps_longitude", "gps_longitude").alias("gps_longitude_list"),
                     F.array("prev_created_at", "created_at").alias("created_at_list"),
-                    F.lit("ghost_detection").alias("event_type")
+                    F.lit("ghost_detection").alias("event_type"),
                     F.col("distance_km"),
                     F.col("time_delta_seconds"),
                     F.col("speed_kmh"),
