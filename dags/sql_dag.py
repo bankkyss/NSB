@@ -11,7 +11,7 @@ SQL_TEST_COMMAND = "SELECT partman.run_maintenance('public.vehicle_events');"
 
 # Define the DAG
 with DAG(
-    dag_id="postgres_test_query_dag",
+    dag_id="postgres_create_patition_retention_dag",
     start_date=pendulum.datetime(2025, 7, 6, tz="Asia/Bangkok"),
     schedule=" 0 */12 * * *",
     catchup=False,
