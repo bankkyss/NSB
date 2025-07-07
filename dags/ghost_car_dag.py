@@ -77,7 +77,7 @@ try:
     kafka_brokers = Variable.get("kafka_brokers", "kafka.kafka.svc.cluster.local:9092")
     kafka_alerts_topic = Variable.get("kafka_alerts_topic", "alerts_topic")
     kafka_log_event_topic = Variable.get("kafka_log_event_topic", "log_event_topic")
-    lookback_hours = Variable.get("speed_analysis_lookback_hours", "24")
+    lookback_hours = Variable.get("lpr_lookback_hours", "12")
     osrm_url = Variable.get("osrm_server_url", "http://router.project-osrm.org")
 
     # สร้าง List ของ Arguments ที่จะส่งให้สคริปต์ PySpark
