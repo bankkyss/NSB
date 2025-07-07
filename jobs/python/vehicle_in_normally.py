@@ -244,7 +244,7 @@ def main():
                 F.struct(
                     "record_uuid", "car_id", "license_plate", "province", "vehicle_brand",
                     "vehicle_color", "camera_name", "camera_id", "event_time", "event_date",
-                    "gps_latitude", "gps_longitude", "created_at", "event_type"
+                    "gps_latitude", "gps_longitude", "created_at", "event_type","distance_km","time_delta_seconds","speed_kmh"
                 )
             ).alias("value")
         )
