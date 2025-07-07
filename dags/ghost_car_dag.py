@@ -138,7 +138,7 @@ with DAG(
         application=SCRIPT_PATH,
         conn_id=SPARK_CONN_ID,
         name="vehicle_speed_analysis_{{ ds_nodash }}_{{ ts_nodash }}",
-        total_executor_cores=10, 
+        # total_executor_cores=10, 
         # --- การปรับแต่งประสิทธิภาพ Spark ---
         # ปรับค่าเหล่านี้ตามขนาดของ Cluster และข้อมูลของคุณ
         num_executors=1,
