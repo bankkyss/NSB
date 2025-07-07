@@ -19,7 +19,7 @@ from airflow.providers.apache.spark.operators.spark_submit import SparkSubmitOpe
 SCRIPT_PATH = "/airflow-git/NSB.git/jobs/python/vehicle_in_normally.py" 
 
 # Connection ID ของ Spark, PostgreSQL, และ Redis ใน Airflow
-SPARK_CONN_ID = "spark_default" # ใช้ชื่อ connection ของคุณ
+SPARK_CONN_ID = "spark" # ใช้ชื่อ connection ของคุณ
 POSTGRES_CONN_ID = "postgres_lpr_db"
 REDIS_CONN_ID = "redis_main"
 
