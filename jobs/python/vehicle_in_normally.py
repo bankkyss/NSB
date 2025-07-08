@@ -182,10 +182,10 @@ def main():
 
 
     # --- Filter for High-Speed Events ---
-    high_speed_df = results_df_with_uuid.filter(F.col("speed_kmh") > 250).cache()
-    logger.info(f"Found {high_speed_df.count()} high-speed events (speed > 250 km/h).")
+    high_speed_df = results_df_with_uuid.filter(F.col("speed_kmh") > 300).cache()
+    logger.info(f"Found {high_speed_df.count()} high-speed events (speed > 300 km/h).")
 
-    if not high_speed_df.rdd.isEmpty():
+    if not high_speed_df.rdd.isEmpty(): 
         # --- Prepare and Send to Kafka Topics ---
 
         # ✅ 1. สร้าง DataFrame สำหรับ Log Event (แยกแต่ละ Event เป็นคนละ Record)
