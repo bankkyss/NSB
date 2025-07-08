@@ -26,6 +26,7 @@ def parse_arguments():
     
     # พารามิเตอร์สำหรับการวิเคราะห์
     parser.add_argument('--lookback-hours', type=int, default=24, help='จำนวนชั่วโมงที่มองย้อนหลังสำหรับข้อมูล')
+    parser.add_argument('--time-threshold-seconds', type=int, default=300, help='กรอบเวลา (วินาที) ที่จะกรอง event ที่น่าสนใจ')
     
     # พารามิเตอร์สำหรับ OSRM
     parser.add_argument('--osrm-server-url', type=str, default="http://router.project-osrm.org", help='URL of the OSRM backend server')
@@ -73,7 +74,7 @@ def main():
     # --- สร้าง Namespace สำหรับ UUID และ Broadcast ไปยัง Worker Nodes ---
     set_uuid = uuid4()
     namespace_broadcast = spark.sparkContext.broadcast(set_uuid)
-
+    processing_timestamp = spark.sql("SELECT current_timestamp()").collect()[0][0]
     # --- Load Data from PostgreSQL ---
     dbtable_query = (
         f"(SELECT * FROM {args.postgres_table} "
@@ -82,7 +83,7 @@ def main():
     logger.info(f"Querying last {args.lookback_hours} hours from table {args.postgres_table}.")
     
     jdbc_url = f"jdbc:postgresql://{args.postgres_host}:{args.postgres_port}/{args.postgres_db}"
-
+    
     try:
         df = spark.read.format("jdbc").options(
             url=jdbc_url,
@@ -110,8 +111,11 @@ def main():
     for col_name in all_columns:
         df_with_prev_log = df_with_prev_log.withColumn(f"prev_{col_name}", F.lag(col_name).over(vehicle_window))
     
-    df_to_process = df_with_prev_log.filter(F.col("prev_car_id").isNotNull()).cache()
-
+    df_to_process = (df_with_prev_log
+                    .filter(F.col("prev_car_id").isNotNull())
+                    .filter(F.col("event_time") > (F.lit(processing_timestamp) - F.expr(f"INTERVAL {args.time_threshold_seconds} SECONDS")))
+                    .cache()
+                    )
     # --- Define the processing function for mapPartitions ---
     def process_partition(iterator):
         redis_client = redis.Redis(
