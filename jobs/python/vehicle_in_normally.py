@@ -150,7 +150,7 @@ def main():
                         if data.get('code') == 'Ok' and data.get('routes'):
                             distance_meters = data['routes'][0]['distance']
                             distance_km = distance_meters / 1000.0
-                            redis_client.set(cache_key, distance_km, ex=86400)
+                            redis_client.set(cache_key, distance_km, ex=1200)
                 except Exception:
                     pass
             
