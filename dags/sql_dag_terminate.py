@@ -7,13 +7,13 @@ from airflow.providers.common.sql.operators.sql import SQLExecuteQueryOperator
 
 # The SQL command for testing.
 # This query selects a specific record from the public.score_event table.
-SQL_TEST_COMMAND = "SELECT  pg_terminate_backend(pid) FROM  pg_stat_activity WHERE  application_name = 'spark-job-etl'   AND state = 'idle';"
+SQL_TEST_COMMAND = "SELECT  pg_terminate_backend(pid) FROM  pg_stat_activity WHERE  application_name = 'spark-job-etl'   AND state = 'idle' AND  query_start < now() - interval '30 second';"
 
 # Define the DAG
 with DAG(
     dag_id="postgres_remove_connecttion_dag",
     start_date=pendulum.datetime(2025, 7, 6, tz="Asia/Bangkok"),
-    schedule=" */3 * * * *",
+    schedule=" */2 * * * *",
     catchup=False,
     doc_md="""
     ### PostgreSQL Test Query DAG
