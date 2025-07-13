@@ -92,7 +92,7 @@ def main():
             password=args.postgres_password,
             driver="org.postgresql.Driver",
             fetchsize="10000"
-        ).load().cache()
+        ).option("application_name", 'vehicle_speed_analysis').load().cache()
         logger.info(f"Loaded {df.count()} records from PostgreSQL.")
         if df.rdd.isEmpty():
             logger.warning("No data loaded. Stopping execution.")

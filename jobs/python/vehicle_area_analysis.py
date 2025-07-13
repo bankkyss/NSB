@@ -267,6 +267,7 @@ def main():
             .option("driver", "org.postgresql.Driver")
             .option("fetchsize", "10000")
             .option("numPartitions", "8") # Can be tuned
+            .option("application_name", 'vehicle_area_analysis')
             .load()
         ).cache()
         logger.info(f"Loaded {df.count()} records from PostgreSQL.")

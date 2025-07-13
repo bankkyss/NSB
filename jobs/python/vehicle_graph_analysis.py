@@ -162,7 +162,7 @@ def main():
             logger.info(f"กำลัง Query ข้อมูลสำหรับ rule '{name}' ({rule_id}) ย้อนหลัง {args.lookback_hours} ชั่วโมง")
 
             try:
-                df_full = spark.read.format("jdbc").option("url", jdbc_url).option("dbtable", dbtable_query).option("user", args.postgres_user).option("password", args.postgres_password).option("driver", "org.postgresql.Driver").option("fetchsize", "10000").load()
+                df_full = spark.read.format("jdbc").option("url", jdbc_url).option("dbtable", dbtable_query).option("user", args.postgres_user).option("password", args.postgres_password).option("driver", "org.postgresql.Driver").option("fetchsize", "10000").option("application_name", 'vehicle_graph_analysis').load()
                 df_full.cache()
                 if df_full.rdd.isEmpty():
                     logger.warning(f"ไม่พบข้อมูลสำหรับ rule '{name}'. Skipping.")
