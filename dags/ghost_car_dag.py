@@ -151,7 +151,7 @@ with DAG(
         conf={
             # การกำหนดพื้นฐาน
             "spark.driver.host": spark_driver_ip,
-            "spark.driver.cores": "1",
+            "spark.driver.cores": "2",
             "spark.driver.bindAddress": "0.0.0.0",
             "spark.dynamicAllocation.enabled": "false",
             "spark.sql.adaptive.enabled": "false",
