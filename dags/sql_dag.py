@@ -9,7 +9,7 @@ from airflow.providers.common.sql.operators.sql import SQLExecuteQueryOperator
 SQL_MAINTENANCE_VEHICLE_EVENTS = "SELECT partman.run_maintenance('public.vehicle_events');"
 SQL_MAINTENANCE_RAW_EVENT_DATA = "SELECT partman.run_maintenance('public.raw_event_data');"
 SQL_MAINTENANCE_SCORE_EVENT = "SELECT partman.run_maintenance('public.score_event');"
-
+SQL_MAINTENANCE_LOG_EVENT = "SELECT partman.run_maintenance('public.log_entity');"
 # Define the DAG
 with DAG(
     dag_id="postgres_partition_maintenance_dag",
@@ -54,7 +54,11 @@ with DAG(
         conn_id="postgres_lpr_db",
         sql=SQL_MAINTENANCE_SCORE_EVENT,
     )
-
+    run_maintenance_log_event = SQLExecuteQueryOperator(
+        task_id="run_maintenance_on_log_event",
+        conn_id="postgres_log_db",
+        sql=SQL_MAINTENANCE_LOG_EVENT,
+    )
     # Define the task dependency chain.
     # The tasks will run sequentially in this order.
-    run_maintenance_vehicle_events >> run_maintenance_raw_event_data >> run_maintenance_score_event
+    run_maintenance_vehicle_events >> run_maintenance_raw_event_data >> run_maintenance_score_event >> run_maintenance_log_event
