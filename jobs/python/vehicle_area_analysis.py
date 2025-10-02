@@ -19,7 +19,7 @@ from pyspark.sql.functions import (
     unix_timestamp,
     max as spark_max
 )
-from pyspark.sql.types import ArrayType, StringType, StructField, StructType
+from pyspark.sql.types import ArrayType, StringType, StructField, StructType, IntegerType
 from pyspark.sql.window import Window
 
 # --- UDF for Consistent UUID Generation ---
@@ -117,7 +117,8 @@ def process_vehicle_intersections(spark, events_df, areas_list, time_threshold, 
         StructField("area_id", StringType(), False),
         StructField("area_name", StringType(), False),
         StructField("camera_ids", ArrayType(StringType()), False),
-        StructField("required_camera_count", StringType(), False)
+        # StructField("required_camera_count", StringType(), False)
+        StructField("required_camera_count", IntegerType(), False) 
     ])
     areas_df = spark.createDataFrame(areas_list, schema=area_schema)
 
