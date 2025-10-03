@@ -98,7 +98,7 @@ def get_rule_data(redis_host, redis_port, redis_password, redis_pattern):
                 if all(k in payload for k in ["id", "rule_name", "number_camera", "time_range", "camera_id"]):
                     rules.append({
                         "rule_id": payload["id"], "name": payload["rule_name"],
-                        "number_camera": payload["number_camera"], "time_range": payload["time_range"],
+                        "number_camera": payload["number_camera"] if payload["number_camera"]>2 else 3, "time_range": payload["time_range"] if payload["time_range"]<300 else 300,
                         "camera_ids": payload["camera_id"]
                     })
                 else:
