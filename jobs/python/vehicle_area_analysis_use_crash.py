@@ -18,7 +18,10 @@ from pyspark.sql.functions import (
     to_json,
     udf,
     unix_timestamp,
-    max as spark_max
+    max as spark_max,
+    min as spark_min,
+    sum as spark_sum,
+    when
 )
 from pyspark.sql.types import ArrayType, StringType, StructField, StructType, IntegerType
 from pyspark.sql.window import Window
@@ -151,6 +154,26 @@ def load_cached_events(spark, cache_path, min_event_time, logger):
     if min_event_time is not None:
         cached_df = cached_df.filter(col("event_time") >= lit(min_event_time))
     return cached_df
+
+
+def log_event_date_stats(events_df, logger, label):
+    if "event_date" not in events_df.columns:
+        logger.warning("%s missing event_date column; parquet partitions may be empty.", label)
+        return
+    stats = (
+        events_df.agg(
+            spark_sum(when(col("event_date").isNull(), 1).otherwise(0)).alias("null_event_date"),
+            spark_min("event_date").alias("min_event_date"),
+            spark_max("event_date").alias("max_event_date"),
+        ).collect()[0]
+    )
+    logger.info(
+        "%s event_date stats: null=%s min=%s max=%s",
+        label,
+        stats["null_event_date"],
+        format_timestamp(stats["min_event_date"]),
+        format_timestamp(stats["max_event_date"]),
+    )
 
 
 def log_cache_listing(spark, cache_path, logger, max_entries=20):
@@ -434,6 +457,7 @@ def main():
         ).persist(CACHE_LEVEL)
         new_events_count = new_events_df.count()
         logger.info(f"Loaded {new_events_count} records from PostgreSQL.")
+        log_event_date_stats(new_events_df, logger, "postgres_events")
     except Exception as e:
         logger.error(f"Failed to load data from PostgreSQL: {e}", exc_info=True)
         spark.stop()
@@ -444,6 +468,8 @@ def main():
     cached_df = None
     if cache_enabled:
         cached_df = load_cached_events(spark, args.parquet_cache_path, lookback_start, logger)
+        if cached_df is not None:
+            log_event_date_stats(cached_df, logger, "cached_events")
 
     if cached_df is not None:
         events_df = cached_df.unionByName(new_events_df, allowMissingColumns=True)
