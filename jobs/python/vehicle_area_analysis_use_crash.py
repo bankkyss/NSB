@@ -487,12 +487,13 @@ def main():
             row_count = df_to_cache.count()
             logger.info(f"Materializing {row_count} rows for parquet cache write.")
             
-            # เขียน parquet โดยใช้ Hadoop committer แบบ classic
+            # เขียน parquet โดยใช้ Hadoop committer แบบ classic พร้อม partition by date
             (df_to_cache
                 .write
                 .format("parquet")
                 .option("mapreduce.fileoutputcommitter.marksuccessfuljobs", "true")
                 .mode("append")
+                .partitionBy("event_date")
                 .save(args.parquet_cache_path))
             
             logger.info(f"Appended {new_events_count} records to parquet cache at {args.parquet_cache_path}.")
