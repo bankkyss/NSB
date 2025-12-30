@@ -490,6 +490,8 @@ def main():
     if cache_enabled:
         cached_df = load_cached_events(spark, args.parquet_cache_path, lookback_start, logger)
         if cached_df is not None:
+            cached_count = cached_df.count()
+            logger.info(f"Loaded {cached_count} records from parquet cache.")
             log_event_date_stats(cached_df, logger, "cached_events")
 
     if cached_df is not None:
