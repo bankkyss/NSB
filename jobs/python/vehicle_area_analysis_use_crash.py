@@ -482,11 +482,19 @@ def main():
 
     if cache_enabled and new_events_count > 0:
         try:
-            (new_events_df
-                .coalesce(1)
+            # บังคับ materialize DataFrame ก่อนเขียน
+            df_to_cache = new_events_df.select("*")
+            row_count = df_to_cache.count()
+            logger.info(f"Materializing {row_count} rows for parquet cache write.")
+            
+            # เขียน parquet โดยใช้ Hadoop committer แบบ classic
+            (df_to_cache
                 .write
+                .format("parquet")
+                .option("mapreduce.fileoutputcommitter.marksuccessfuljobs", "true")
                 .mode("append")
-                .parquet(args.parquet_cache_path))
+                .save(args.parquet_cache_path))
+            
             logger.info(f"Appended {new_events_count} records to parquet cache at {args.parquet_cache_path}.")
             log_cache_listing(spark, args.parquet_cache_path, logger)
             max_event_time = (
