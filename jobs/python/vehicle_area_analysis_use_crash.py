@@ -454,6 +454,7 @@ def main():
             .option("numPartitions", "8") # Can be tuned
             .option("application_name", 'vehicle_area_analysis')
             .load()
+            .withColumn("event_hour", hour("event_time"))
         ).persist(CACHE_LEVEL)
         new_events_count = new_events_df.count()
         logger.info(f"Loaded {new_events_count} records from PostgreSQL.")
@@ -493,7 +494,7 @@ def main():
                 .format("parquet")
                 .option("mapreduce.fileoutputcommitter.marksuccessfuljobs", "true")
                 .mode("append")
-                .partitionBy("event_date")
+                .partitionBy("event_date", "event_hour")
                 .save(args.parquet_cache_path))
             
             logger.info(f"Appended {new_events_count} records to parquet cache at {args.parquet_cache_path}.")

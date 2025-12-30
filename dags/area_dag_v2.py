@@ -117,6 +117,9 @@ try:
     lookback_hours = Variable.get("lpr_lookback_hours", "12")
     time_threshold = Variable.get("lpr_time_threshold_seconds", "300")
     parquet_cache_path = Variable.get("vehicle_area_parquet_cache_path", "")
+    # OVERRIDE FOR FIX: ใช้ path ใหม่เพื่อเริ่ม cache v2 สะอาดๆ
+    # if parquet_cache_path:
+    #     parquet_cache_path = parquet_cache_path.replace("vehicle_area_cache", "vehicle_area_cache_v2")
     redis_checkpoint_key = Variable.get(
         "vehicle_area_checkpoint_key",
         "vehicle_area_analysis:checkpoint_ts",
