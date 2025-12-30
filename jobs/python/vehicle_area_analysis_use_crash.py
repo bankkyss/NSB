@@ -153,6 +153,32 @@ def load_cached_events(spark, cache_path, min_event_time, logger):
     return cached_df
 
 
+def log_cache_listing(spark, cache_path, logger, max_entries=20):
+    try:
+        jconf = spark._jsc.hadoopConfiguration()
+        jpath = spark._jvm.org.apache.hadoop.fs.Path(cache_path)
+        fs = jpath.getFileSystem(jconf)
+        if not fs.exists(jpath):
+            logger.warning("Cache path does not exist for listing: %s", cache_path)
+            return
+        it = fs.listFiles(jpath, True)
+        count = 0
+        while it.hasNext() and count < max_entries:
+            status = it.next()
+            logger.info(
+                "Cache object: %s (size=%d)",
+                status.getPath().toString(),
+                status.getLen(),
+            )
+            count += 1
+        if count == 0:
+            logger.warning("Cache path has no files: %s", cache_path)
+        elif it.hasNext():
+            logger.info("Cache listing truncated after %d entries.", max_entries)
+    except Exception as exc:
+        logger.warning("Failed to list cache path %s: %s", cache_path, exc)
+
+
 def get_all_areas_from_redis(redis_client, pattern="area_detect:*"):
     """
     Scans Redis for all area configurations using the specified pattern.
@@ -435,6 +461,7 @@ def main():
                 .partitionBy("event_date")
                 .parquet(args.parquet_cache_path))
             logger.info(f"Appended {new_events_count} records to parquet cache at {args.parquet_cache_path}.")
+            log_cache_listing(spark, args.parquet_cache_path, logger)
             max_event_time = (
                 new_events_df.agg(spark_max("event_time").alias("max_event_time"))
                 .collect()[0]["max_event_time"]
