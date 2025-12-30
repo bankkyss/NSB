@@ -114,7 +114,7 @@ try:
     kafka_log_event_topic = Variable.get("kafka_log_event_topic", "log_event_topic")
     kafka_alerts_topic = f"{kafka_alerts_topic}demo"
     kafka_log_event_topic = f"{kafka_log_event_topic}demo"
-    lookback_hours = Variable.get("lpr_lookback_hours", "12")
+    lookback_hours = Variable.get("lpr_lookback_hours_v2", "12")
     time_threshold = Variable.get("lpr_time_threshold_seconds", "300")
     parquet_cache_path = Variable.get("vehicle_area_parquet_cache_path", "")
     # OVERRIDE FOR FIX: ใช้ path ใหม่เพื่อเริ่ม cache v2 สะอาดๆ
