@@ -182,7 +182,10 @@ try:
                 "spark.hadoop.fs.s3a.aws.credentials.provider": (
                     "org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider"
                 ),
-                # ไม่ใช้ S3A committer - ใช้ Hadoop FileOutputCommitter แทน
+                # ปิด change detection เพราะ RustFS ไม่รองรับ x-amz-copy-source-if-match header
+                "spark.hadoop.fs.s3a.change.detection.mode": "none",
+                "spark.hadoop.fs.s3a.change.detection.source": "none",
+                "spark.hadoop.fs.s3a.change.detection.version.required": "false",
             }
         )
 except (AirflowNotFoundException, KeyError) as e:
