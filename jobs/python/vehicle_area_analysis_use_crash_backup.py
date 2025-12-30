@@ -7,7 +7,6 @@ from datetime import datetime, timedelta
 import redis
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import (
-    broadcast,
     col,
     collect_list,
     countDistinct,
@@ -261,28 +260,10 @@ def process_vehicle_intersections(spark, events_df, areas_list, time_threshold, 
         StructField("required_camera_count", IntegerType(), False) 
     ])
     areas_df = spark.createDataFrame(areas_list, schema=area_schema)
-    
-    # --- FIX OPTIMIZATION: กรองเฉพาะรถที่มีความเคลื่อนไหวในช่วงเวลา threshold ---
-    # ถ้าไม่มี event ในช่วง 5-10 นาทีนี้ ก็ไม่มีทาง trigger alert ได้
-    # เราจึงหา "Active Cars" ก่อน แล้วค่อยเอาไป Join
-    recent_active_start = processing_ts - timedelta(seconds=time_threshold)
-    logger.info(f"Filtering for active cars with events since {format_timestamp(recent_active_start)} (threshold {time_threshold}s)")
-    
-    # 1. หา License Plate ของรถที่ Active
-    active_cars_df = (
-        events_df
-        .filter(col("event_time") >= lit(recent_active_start))
-        .select("license_plate")
-        .distinct()
-    )
-    
-    # 2. กรอง Events ทั้งหมด (Lookback 12hr) ให้เหลือเฉพาะของ Active Cars
-    # ใช้ broadcast join เพราะ active_cars_df น่าจะมีขนาดเล็ก
-    filtered_events_df = events_df.join(broadcast(active_cars_df), "license_plate", "inner")
 
     window_spec = Window.partitionBy("license_plate", "camera_id").orderBy(col("event_time").desc())
     unique_events_df = (
-        filtered_events_df
+        events_df
         .withColumn("row_num", row_number().over(window_spec))
         .filter(col("row_num") == 1)
         .drop("row_num")
