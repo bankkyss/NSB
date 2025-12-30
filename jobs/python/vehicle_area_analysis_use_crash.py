@@ -21,7 +21,8 @@ from pyspark.sql.functions import (
     max as spark_max,
     min as spark_min,
     sum as spark_sum,
-    when
+    when,
+    hour
 )
 from pyspark.sql.types import ArrayType, StringType, StructField, StructType, IntegerType
 from pyspark.sql.window import Window
