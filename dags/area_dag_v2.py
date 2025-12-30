@@ -182,19 +182,7 @@ try:
                 "spark.hadoop.fs.s3a.aws.credentials.provider": (
                     "org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider"
                 ),
-                "spark.hadoop.fs.s3a.committer.name": "directory",
-                "spark.hadoop.mapreduce.outputcommitter.factory.scheme.s3a": (
-                    "org.apache.hadoop.fs.s3a.commit.S3ACommitterFactory"
-                ),
-                "spark.sql.sources.commitProtocolClass": (
-                    "org.apache.spark.internal.io.cloud.PathOutputCommitProtocol"
-                ),
-                "spark.sql.parquet.output.committer.class": (
-                    "org.apache.spark.internal.io.cloud.BindingParquetOutputCommitter"
-                ),
-                "spark.hadoop.mapreduce.fileoutputcommitter.algorithm.version": "2",
-                "spark.hadoop.fs.s3a.change.detection.mode": "none",
-                "spark.hadoop.fs.s3a.change.detection.source": "none",
+                # ไม่ใช้ S3A committer - ใช้ Hadoop FileOutputCommitter แทน
             }
         )
 except (AirflowNotFoundException, KeyError) as e:
