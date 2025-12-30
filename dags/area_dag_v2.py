@@ -130,6 +130,11 @@ try:
     rustfs_secret_key = Variable.get("rustfs_secret_key", "")
     rustfs_path_style = Variable.get("rustfs_s3_path_style", "true")
     rustfs_ssl_enabled = Variable.get("rustfs_s3_ssl_enabled", "false")
+    spark_maven_repositories = Variable.get(
+        "spark_maven_repositories",
+        "https://repo.maven.apache.org/maven2/,https://repo1.maven.org/maven2/,https://repos.spark-packages.org/",
+    )
+    spark_jars_ivy = Variable.get("spark_jars_ivy", "")
 
     APPLICATION_ARGS = [
         "--postgres-host", pg_conn.host,
@@ -160,8 +165,10 @@ try:
         "spark.dynamicAllocation.enabled": "false",
         "spark.sql.adaptive.enabled": "false",
         "spark.jars.packages": ALL_PACKAGES_FOR_CONF,
-        "spark.jars.repositories": "https://repos.spark-packages.org/",
+        "spark.jars.repositories": spark_maven_repositories,
     }
+    if spark_jars_ivy:
+        SPARK_CONF_BASE["spark.jars.ivy"] = spark_jars_ivy
 
     if parquet_cache_path.startswith("s3a://") and rustfs_endpoint and rustfs_access_key and rustfs_secret_key:
         SPARK_CONF_BASE.update(
