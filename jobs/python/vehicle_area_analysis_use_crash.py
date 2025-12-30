@@ -483,10 +483,9 @@ def main():
     if cache_enabled and new_events_count > 0:
         try:
             (new_events_df
-                .repartition("event_date")
+                .coalesce(1)
                 .write
                 .mode("append")
-                .partitionBy("event_date")
                 .parquet(args.parquet_cache_path))
             logger.info(f"Appended {new_events_count} records to parquet cache at {args.parquet_cache_path}.")
             log_cache_listing(spark, args.parquet_cache_path, logger)

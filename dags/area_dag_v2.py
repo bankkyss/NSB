@@ -183,8 +183,6 @@ try:
                     "org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider"
                 ),
                 "spark.hadoop.fs.s3a.committer.name": "directory",
-                "spark.hadoop.fs.s3a.committer.staging.conflict-mode": "append",
-                "spark.hadoop.fs.s3a.committer.staging.unique-filenames": "true",
                 "spark.hadoop.mapreduce.outputcommitter.factory.scheme.s3a": (
                     "org.apache.hadoop.fs.s3a.commit.S3ACommitterFactory"
                 ),
@@ -194,7 +192,6 @@ try:
                 "spark.sql.parquet.output.committer.class": (
                     "org.apache.spark.internal.io.cloud.BindingParquetOutputCommitter"
                 ),
-                "spark.sql.sources.partitionColumnTypeInference.enabled": "true",
                 "spark.hadoop.mapreduce.fileoutputcommitter.algorithm.version": "2",
                 "spark.hadoop.fs.s3a.change.detection.mode": "none",
                 "spark.hadoop.fs.s3a.change.detection.source": "none",
