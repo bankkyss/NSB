@@ -482,7 +482,9 @@ def main():
 
     if cache_enabled and new_events_count > 0:
         try:
-            (new_events_df.write
+            (new_events_df
+                .repartition("event_date")
+                .write
                 .mode("append")
                 .partitionBy("event_date")
                 .parquet(args.parquet_cache_path))
