@@ -219,6 +219,16 @@ def get_all_areas_from_redis(redis_client, pattern="area_detect:*"):
                     logger.warning(f"Key '{key}' has no payload. Skipping.")
                     continue
 
+                # FIX: เช็ค is_deleted จาก string ดิบก่อน เพราะบางอัน JSON ผิด format แต่เป็นตัวที่ถูกลบไปแล้ว
+                if '"is_deleted": "True"' in payload_str or '"is_deleted": true' in payload_str:
+                     logger.warning(f"Found deleted area key: {key}. Deleting from Redis...")
+                     try:
+                         redis_client.delete(key)
+                         logger.info(f"Successfully deleted key: {key}")
+                     except Exception as del_err:
+                         logger.error(f"Failed to delete key {key}: {del_err}")
+                     continue
+
                 payload = json.loads(payload_str)
                 area_name = payload.get("name")
                 area_id = payload.get("id")
