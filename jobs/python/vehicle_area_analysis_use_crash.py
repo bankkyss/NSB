@@ -223,13 +223,13 @@ def get_all_areas_from_redis(redis_client, pattern="area_detect:*"):
                 area_name = payload.get("name")
                 area_id = payload.get("id")
                 camera_ids = payload.get("camera_id", [])
-
+                number_of_camera = payload.get("number_of_camera", len(camera_ids))
                 if camera_ids and area_name and area_id:
                     areas.append({
                         "area_id": area_id,
                         "area_name": area_name,
                         "camera_ids": camera_ids,
-                        "required_camera_count": len(camera_ids)
+                        "required_camera_count": number_of_camera
                     })
                 else:
                     logger.warning(f"Incomplete data for key '{key}'. Skipping.")
