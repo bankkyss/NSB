@@ -53,6 +53,8 @@ log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # ฟังก์ชันสำหรับ PythonOperator (Pre-flight checks)
 # ---------------------------------------------------------------------------
+def _is_truthy(value: str) -> bool:
+    return str(value).strip().lower() in {"1", "true", "yes", "y"}
 
 def verify_pyspark_version() -> None:
     """ตรวจสอบว่า PySpark version ตรงกับที่คาดหวังหรือไม่"""
@@ -110,6 +112,16 @@ try:
     parquet_cache_path = Variable.get("vehicle_area_parquet_cache_path", "")
     redis_checkpoint_key = Variable.get("vehicle_graph_checkpoint_key", "vehicle_graph_analysis:checkpoint_ts")
     checkpoint_overlap_seconds = Variable.get("vehicle_graph_checkpoint_overlap_seconds", "60")
+    jdbc_num_partitions = Variable.get("graph_jdbc_num_partitions", "20")
+    jdbc_fetchsize = Variable.get("graph_jdbc_fetchsize", "50000")
+    graph_algorithm = Variable.get("graph_algorithm", "connected_components")
+    graph_max_iter = Variable.get("graph_max_iter", "10")
+    cc_algorithm = Variable.get("graph_cc_algorithm", "graphx")
+    edge_prefilter_seconds = Variable.get("graph_edge_prefilter_seconds", "")
+    edge_broadcast_threshold = Variable.get("graph_edge_broadcast_threshold", "0")
+    edge_repartition = Variable.get("graph_edge_repartition", "200")
+    use_approx_count_distinct = Variable.get("graph_use_approx_count_distinct", "false")
+    approx_rsd = Variable.get("graph_approx_rsd", "0.05")
     
     rustfs_endpoint = Variable.get("rustfs_s3_endpoint", "")
     rustfs_access_key = Variable.get("rustfs_access_key", "")
@@ -139,7 +151,19 @@ try:
         "--parquet-cache-path", parquet_cache_path,
         "--redis-checkpoint-key", redis_checkpoint_key,
         "--checkpoint-overlap-seconds", checkpoint_overlap_seconds,
+        "--jdbc-num-partitions", jdbc_num_partitions,
+        "--jdbc-fetchsize", jdbc_fetchsize,
+        "--edge-broadcast-threshold", edge_broadcast_threshold,
+        "--edge-repartition", edge_repartition,
+        "--graph-algorithm", graph_algorithm,
+        "--graph-max-iter", graph_max_iter,
+        "--cc-algorithm", cc_algorithm,
     ]
+    if edge_prefilter_seconds != "":
+        APPLICATION_ARGS.extend(["--edge-prefilter-seconds", edge_prefilter_seconds])
+    if _is_truthy(use_approx_count_distinct):
+        APPLICATION_ARGS.append("--use-approx-count-distinct")
+        APPLICATION_ARGS.extend(["--approx-count-distinct-rsd", approx_rsd])
 except (AirflowNotFoundException, KeyError) as e:
     log.warning(f"Could not find a required Airflow Connection or Variable: {e}. "
                 "The DAG will be created but tasks may fail. Please configure them in the UI.")
@@ -205,6 +229,13 @@ with DAG(
             # การตั้งค่าประสิทธิภาพสำหรับ GraphFrames
             "spark.sql.adaptive.enabled": "false",
             "spark.sql.adaptive.coalescePartitions.enabled": "true",
+            "spark.sql.shuffle.partitions": "400",
+            "spark.default.parallelism": "400",
+            "spark.sql.autoBroadcastJoinThreshold": "52428800",
+            "spark.executor.extraJavaOptions": "-XX:+UseG1GC -XX:InitiatingHeapOccupancyPercent=35",
+            "spark.memory.fraction": "0.8",
+            "spark.memory.storageFraction": "0.3",
+            "spark.sql.files.maxPartitionBytes": "268435456",
             "spark.driver.maxResultSize": "2g",
             "spark.sql.maxPlanStringLength": "10485760",
             "spark.serializer": "org.apache.spark.serializer.KryoSerializer",

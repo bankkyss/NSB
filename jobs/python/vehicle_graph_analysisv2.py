@@ -11,9 +11,10 @@ from pyspark.sql.functions import (
     to_json, struct, unix_timestamp, expr,
     min as spark_min, max as spark_max, collect_set,
     current_timestamp, explode, lit, date_format, to_timestamp,
-    hour, when, sum as spark_sum
+    hour, when, sum as spark_sum, approx_count_distinct, broadcast
 )
 from pyspark.sql.utils import AnalysisException
+from pyspark import StorageLevel
 from datetime import timedelta
 
 from graphframes import GraphFrame
@@ -51,6 +52,16 @@ def parse_arguments():
     parser.add_argument("--parquet-cache-path", default="", help="Parquet cache path (e.g., rustfs mount). When set, only incremental data is loaded from PostgreSQL")
     parser.add_argument("--redis-checkpoint-key", default="vehicle_graph_analysis:checkpoint_ts", help="Redis key for the last processed event_time checkpoint")
     parser.add_argument("--checkpoint-overlap-seconds", type=int, default=60, help="Overlap window in seconds when querying from the checkpoint to avoid late events")
+    parser.add_argument("--jdbc-num-partitions", type=int, default=20, help="JDBC parallel read partitions (set to 1 to disable)")
+    parser.add_argument("--jdbc-fetchsize", type=int, default=50000, help="JDBC fetch size")
+    parser.add_argument("--edge-prefilter-seconds", type=int, default=None, help="Seconds to prefilter events for edge join; omit to use auto window; <=0 disables")
+    parser.add_argument("--edge-broadcast-threshold", type=int, default=0, help="Broadcast events for self-join when row count <= threshold (0 disables)")
+    parser.add_argument("--edge-repartition", type=int, default=200, help="Repartition edges by src before GraphFrames")
+    parser.add_argument("--use-approx-count-distinct", action="store_true", help="Use approx_count_distinct for edge aggregation")
+    parser.add_argument("--approx-count-distinct-rsd", type=float, default=0.05, help="RSD for approx_count_distinct")
+    parser.add_argument("--graph-algorithm", type=str, default="connected_components", choices=["connected_components", "label_propagation"], help="Graph grouping algorithm")
+    parser.add_argument("--graph-max-iter", type=int, default=10, help="Max iterations for label propagation")
+    parser.add_argument("--cc-algorithm", type=str, default="graphx", choices=["graphx", "graphframes"], help="Connected components backend")
     
     return parser.parse_args()
 
@@ -198,6 +209,7 @@ def load_cached_events(spark, cache_path, min_event_time, logger):
     # logger.info("Parquet cache schema: %s", cached_df.schema.simpleString())
     if min_event_time is not None:
         cached_df = cached_df.filter(col("event_time") >= lit(min_event_time))
+        cached_df = cached_df.filter(col("event_date") >= lit(min_event_time.date()))
     return cached_df
 
 
@@ -330,7 +342,7 @@ def main():
         )
         
         try:
-            new_events_df = (
+            jdbc_reader = (
                 spark.read
                 .format("jdbc")
                 .option("url", jdbc_url)
@@ -338,12 +350,24 @@ def main():
                 .option("user", args.postgres_user)
                 .option("password", args.postgres_password)
                 .option("driver", "org.postgresql.Driver")
-                .option("fetchsize", "10000")
+                .option("fetchsize", str(args.jdbc_fetchsize))
                 .option("application_name", 'vehicle_graph_analysis_incremental')
+            )
+            if args.jdbc_num_partitions and args.jdbc_num_partitions > 1 and query_start_ts < processing_timestamp:
+                jdbc_reader = (
+                    jdbc_reader
+                    .option("partitionColumn", "event_time")
+                    .option("lowerBound", query_start_str)
+                    .option("upperBound", format_timestamp(processing_timestamp))
+                    .option("numPartitions", str(args.jdbc_num_partitions))
+                )
+            new_events_df = (
+                jdbc_reader
                 .load()
                 .withColumn("event_hour", hour("event_time"))
                 .withColumn("event_date", col("event_time").cast("date"))
-            ).cache()
+                .persist(StorageLevel.MEMORY_AND_DISK)
+            )
             
             new_events_count = new_events_df.count()
             logger.info(f"Loaded {new_events_count} new records from PostgreSQL.")
@@ -370,7 +394,7 @@ def main():
             logger.info("Using only postgres data.")
         
         # Filter to strict lookback window
-        df_master = df_master.filter(col("event_time") >= lit(lookback_start)).cache()
+        df_master = df_master.filter(col("event_time") >= lit(lookback_start)).persist(StorageLevel.MEMORY_AND_DISK)
         total_records = df_master.count()
         logger.info(f"Total Master Data ready for processing: {total_records} records.")
 
@@ -444,14 +468,15 @@ def main():
                     .filter(col("timestamp_utc") >= cutoff_time)
                     .select("license_plate")
                     .distinct()
-                    .cache()
+                    .persist(StorageLevel.MEMORY_ONLY)
                 )
 
-                if df_interest.rdd.isEmpty():
+                df_interest_count = df_interest.count()
+                if df_interest_count == 0:
                      logger.info(f"ไม่พบรถที่ Active ในช่วง {args.time_threshold_seconds}s ล่าสุด สำหรับ rule '{name}'. Skipping.")
                      continue
                 
-                logger.info(f"พบ Active Cars จำนวน {df_interest.count()} คัน (ไว้ใช้ Filter กลุ่ม)")
+                logger.info(f"พบ Active Cars จำนวน {df_interest_count} คัน (ไว้ใช้ Filter กลุ่ม)")
 
                 # 2. ใช้ข้อมูล Full 24H สำหรับสร้าง Graph (Events) เพื่อให้เห็นความสัมพันธ์ครบถ้วน
                 # (ไม่ filter เวลาทิ้ง เพื่อให้เห็นคู่ Inactive)
@@ -461,18 +486,72 @@ def main():
                     .withColumnRenamed("camera_name", "point")
                     .withColumnRenamed("timestamp_utc", "timestamp")
                     .repartition("point") 
-                    .cache()
                 )
-                
-                e1, e2 = events.alias("a"), events.alias("b")
-                raw_edges = e1.join(e2, (col("a.point") == col("b.point")) & (col("a.vehicle") < col("b.vehicle")) & (abs(col("a.timestamp") - col("b.timestamp")) <= time_range)).select(col("a.vehicle").alias("src"), col("b.vehicle").alias("dst"), col("a.point"))
-                edges = raw_edges.groupBy("src", "dst").agg(countDistinct("point").alias("common_points")).filter(col("common_points") >= number_camera).cache()
+
+                if args.edge_prefilter_seconds is None:
+                    events_for_join = events.filter(
+                        col("timestamp").between(cutoff_time - time_range, current_time_unix)
+                    )
+                    logger.info("Using auto prefilter window for edge join.")
+                elif args.edge_prefilter_seconds > 0:
+                    events_for_join = events.filter(
+                        col("timestamp").between(current_time_unix - args.edge_prefilter_seconds, current_time_unix)
+                    )
+                    logger.info("Using %ss prefilter window for edge join.", args.edge_prefilter_seconds)
+                else:
+                    events_for_join = events
+                    logger.info("Edge prefilter disabled; using full lookback window.")
+
+                if args.edge_broadcast_threshold and args.edge_broadcast_threshold > 0:
+                    events_for_join = events_for_join.persist(StorageLevel.MEMORY_AND_DISK)
+                    events_for_join_count = events_for_join.limit(args.edge_broadcast_threshold + 1).count()
+                    if events_for_join_count <= args.edge_broadcast_threshold:
+                        e1 = broadcast(events_for_join).alias("a")
+                        logger.info("Broadcasting events for self-join (rows=%d).", events_for_join_count)
+                    else:
+                        e1 = events_for_join.alias("a")
+                    e2 = events_for_join.alias("b")
+                else:
+                    e1, e2 = events_for_join.alias("a"), events_for_join.alias("b")
+
+                raw_edges = e1.join(
+                    e2,
+                    (col("a.point") == col("b.point"))
+                    & (col("a.vehicle") < col("b.vehicle"))
+                    & (abs(col("a.timestamp") - col("b.timestamp")) <= time_range),
+                ).select(
+                    col("a.vehicle").alias("src"),
+                    col("b.vehicle").alias("dst"),
+                    col("a.point"),
+                )
+                common_points_expr = countDistinct("point")
+                if args.use_approx_count_distinct:
+                    common_points_expr = approx_count_distinct("point", rsd=args.approx_count_distinct_rsd)
+                edges = (
+                    raw_edges
+                    .groupBy("src", "dst")
+                    .agg(common_points_expr.alias("common_points"))
+                    .filter(col("common_points") >= number_camera)
+                )
+                if args.edge_repartition and args.edge_repartition > 0:
+                    edges = edges.repartition(args.edge_repartition, "src")
+                edges = edges.persist(StorageLevel.MEMORY_AND_DISK)
                 if edges.rdd.isEmpty():
                     logger.warning(f"ไม่พบ Edge ที่ตรงตามเงื่อนไขสำหรับ rule '{name}'.")
                     continue
-                verts = events.select(col("vehicle").alias("id")).distinct()
+                verts = events_for_join.select(col("vehicle").alias("id")).distinct().persist(StorageLevel.MEMORY_AND_DISK)
                 g = GraphFrame(verts, edges.select("src", "dst"))
-                cc = g.connectedComponents()
+                if args.graph_algorithm == "label_propagation":
+                    cc = g.labelPropagation(maxIter=args.graph_max_iter).withColumnRenamed("label", "component")
+                else:
+                    try:
+                        cc = g.connectedComponents(algorithm=args.cc_algorithm)
+                    except TypeError:
+                        logger.warning(
+                            "connectedComponents() does not accept algorithm='%s'; using default.",
+                            args.cc_algorithm,
+                        )
+                        cc = g.connectedComponents()
                 groups_all = cc.groupBy("component").agg(collect_list("id").alias("vehicles")).filter(size(col("vehicles")) > 1)
                 groups_exploded = groups_all.select(col("component"), explode(col("vehicles")).alias("vehicle"))
                 groups_with_interest = groups_exploded.join(df_interest.withColumnRenamed("license_plate", "vehicle"), "vehicle", "inner").select("component").distinct().join(groups_all, "component")
@@ -519,8 +598,10 @@ def main():
             finally:
                 # df_full.unpersist() # ไม่ต้อง unpersist เพราะเป็น slice จาก df_master
                 if 'df_interest' in locals(): df_interest.unpersist()
+                if 'events_for_join' in locals(): events_for_join.unpersist()
                 if 'events' in locals(): events.unpersist()
                 if 'edges' in locals(): edges.unpersist()
+                if 'verts' in locals(): verts.unpersist()
 
         # Unpersist Master Data หลังจบทุก Rule
         df_master.unpersist()
