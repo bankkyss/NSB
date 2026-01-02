@@ -44,9 +44,15 @@ GRAPHFRAMES_COORD = "graphframes:graphframes:0.8.4-spark3.5-s_2.12"
 POSTGRES_JDBC_COORD = "org.postgresql:postgresql:42.2.19"
 SPARK_KAFKA_SQL_COORD = "org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0"
 KAFKA_CLIENTS_COORD = "org.apache.kafka:kafka-clients:3.4.1"
+SPARK_HADOOP_CLOUD_COORD = "org.apache.spark:spark-hadoop-cloud_2.12:3.5.5"
+HADOOP_AWS_COORD = "org.apache.hadoop:hadoop-aws:3.3.4"
+AWS_SDK_BUNDLE_COORD = "com.amazonaws:aws-java-sdk-bundle:1.12.262"
 
 # รวมทุก Packages เป็น String เดียว
-ALL_PACKAGES_FOR_CONF = f"{GRAPHFRAMES_COORD},{SPARK_KAFKA_SQL_COORD},{KAFKA_CLIENTS_COORD},{POSTGRES_JDBC_COORD}"
+ALL_PACKAGES_FOR_CONF = (
+    f"{GRAPHFRAMES_COORD},{SPARK_KAFKA_SQL_COORD},{KAFKA_CLIENTS_COORD},"
+    f"{POSTGRES_JDBC_COORD},{SPARK_HADOOP_CLOUD_COORD},{HADOOP_AWS_COORD},{AWS_SDK_BUNDLE_COORD}"
+)
 
 log = logging.getLogger(__name__)
 
