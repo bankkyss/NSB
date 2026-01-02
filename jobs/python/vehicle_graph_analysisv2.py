@@ -66,7 +66,7 @@ def create_spark_session():
 
     spark_builder = (
         SparkSession.builder
-        .appName("Vehicle Group Alert")
+        .appName("Vehicle Group Alert v2")
         .config("spark.sql.adaptive.enabled", "true")
         .config("spark.sql.adaptive.coalescePartitions.enabled", "true")
         .config("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
@@ -101,7 +101,7 @@ def get_rule_data(redis_host, redis_port, redis_password, redis_pattern):
         for key in redis_client.scan_iter(match=redis_pattern, count=1000):
             try:
                 payload_str = redis_client.get(key)
-                print(f"payload_str: {payload_str}")
+                # print(f"payload_str: {payload_str}")
                 if not payload_str: continue
                 payload = json.loads(payload_str)
                 if all(k in payload for k in ["id", "rule_name", "number_camera", "time_range", "camera_id"]):
@@ -283,6 +283,10 @@ def main():
         logger.info(f"เวลาที่ใช้ประมวลผล (จาก Spark): {processing_timestamp}. จะกรอง Alert ที่มี end_time หลังจาก: {alert_time_cutoff}")
         jdbc_url = f"jdbc:postgresql://{args.postgres_host}:{args.postgres_port}/{args.postgres_db}"
         list_data = get_rule_data(args.redis_host, args.redis_port, args.redis_password, args.redis_pattern)
+        list_data = sorted(
+            list_data,
+            key=lambda rule: len(rule.get("camera_ids") or []),
+        )
         
         # --- CACHING LOGIC START ---
         
