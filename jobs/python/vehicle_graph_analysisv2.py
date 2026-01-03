@@ -85,7 +85,8 @@ def create_spark_session():
         logger.info(f"ตั้งค่า Checkpoint directory ของ GraphFrames ไปที่ HDFS: {checkpoint_dir_hdfs}")
     except Exception as e:
         logger.warning(f"ไม่สามารถตั้งค่า HDFS checkpoint directory: {e}. ใช้ local directory แทน")
-        local_fallback_checkpoint_dir = f"file:///tmp/spark-checkpoints/graphframes-fallback/{uuid.uuid4()}"
+        # local_fallback_checkpoint_dir = f"file:///tmp/spark-checkpoints/graphframes-fallback/{uuid.uuid4()}"
+        local_fallback_checkpoint_dir = f"/tmp/spark-checkpoints/graphframes-fallback/{uuid.uuid4()}"
         spark.sparkContext.setCheckpointDir(local_fallback_checkpoint_dir)
         logger.info(f"ใช้ Local checkpoint directory: {local_fallback_checkpoint_dir}")
     spark.sparkContext.setLogLevel("WARN")
