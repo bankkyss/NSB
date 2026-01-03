@@ -509,24 +509,42 @@ def main():
                     )
                 )
                 logger.info(f"สร้าง Raw Edges สำหรับ rule '{name}' จำนวน {raw_edges.count()} รายการ")
-                edges = (
+                # edges = (
+                #     raw_edges
+                #     .groupBy("src", "dst")
+                #     .agg(countDistinct("point").alias("common_points"))
+                #     .filter(col("common_points") >= number_camera)
+                # )
+                edges_aggregated = (
                     raw_edges
                     .groupBy("src", "dst")
                     .agg(countDistinct("point").alias("common_points"))
-                    .filter(col("common_points") >= number_camera)
                 )
+
+                # 2. **สำคัญมาก** ต้อง .cache() เพราะเราจะใช้ DataFrame นี้ 2 ครั้ง 
+                # (ครั้งที่ 1 หา Max, ครั้งที่ 2 เอาไป Filter) ถ้าไม่ Cache Spark จะคำนวณใหม่ 2 รอบทำให้ช้า
+                edges_aggregated.cache()
+
+                # 3. สั่ง Action เพื่อหาค่า Max มา Log
+                try:
+                    # ตรวจสอบว่ามีข้อมูลหรือไม่ก่อนหา Max
+                    if not edges_aggregated.rdd.isEmpty():
+                        max_cp_row = edges_aggregated.agg(spark_max("common_points").alias("max_val")).collect()
+                        max_common_points = max_cp_row[0]["max_val"]
+                        
+                        logger.info(f"STATS Rule '{name}': พบ common_points สูงสุด = {max_common_points} (เกณฑ์ที่ตั้งไว้: {number_camera})")
+                    else:
+                        logger.info(f"STATS Rule '{name}': ไม่พบ Edges ใดๆ เลยหลังจากการ Group")
+                except Exception as e:
+                    logger.warning(f"ไม่สามารถคำนวณ Max common points ได้: {e}")
+
+                # 4. นำ edges_aggregated มา Filter ตามปกติ เพื่อไปทำงานต่อ
+                edges = edges_aggregated.filter(col("common_points") >= number_camera)
                 edges = edges.checkpoint(eager=True).cache()
                 if edges.rdd.isEmpty():
                     logger.warning(f"ไม่พบ Edge ที่ตรงตามเงื่อนไขสำหรับ rule '{name}'.")
-                    
-                    max_common_points = (
-                        edges
-                        .agg(spark_max("common_points").alias("max_common_points"))
-                        .first()["max_common_points"]
-                    )
-                    logger.info(f"จำนวน camera มากที่สุดที่พบ (common points) สำหรับ rule '{name}' คือ {max_common_points}")
-                    logger.info(f"กรอง Edges ที่มีอย่างน้อย {number_camera} common points สำหรับ rule '{name}' จำนวน {edges.count()} รายการ")
                     continue
+                logger.info(f"กรอง Edges ที่มีอย่างน้อย {number_camera} common points สำหรับ rule '{name}' จำนวน {edges.count()} รายการ")
                 verts = events.select(col("vehicle").alias("id")).distinct()
                 g = GraphFrame(verts, edges.select("src", "dst"))
                 cc = g.connectedComponents()
