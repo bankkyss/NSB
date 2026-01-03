@@ -112,7 +112,8 @@ def get_rule_data(redis_host, redis_port, redis_password, redis_pattern):
                 if all(k in payload for k in ["id", "rule_name", "number_camera", "time_range", "camera_id"]):
                     rules.append({
                         "rule_id": payload["id"], "name": payload["rule_name"],
-                        "number_camera": payload["number_camera"] if payload["number_camera"]>2 else 3, "time_range": payload["time_range"] if payload["time_range"]<300 else 300,
+                        "number_camera": payload["number_camera"] if payload["number_camera"]>2 else 3,
+                        "time_range": payload["time_range"] if payload["time_range"]<300 else 300,
                         "camera_ids": payload["camera_id"]
                     })
                 else:
@@ -204,7 +205,6 @@ def load_cached_events(spark, cache_path, min_event_time, logger):
     if min_event_time is not None:
         cached_df = cached_df.filter(col("event_time") >= lit(min_event_time))
     return cached_df
-
 
 def log_event_date_stats(events_df, logger, label):
     if "event_date" not in events_df.columns:
@@ -508,6 +508,7 @@ def main():
                         col("point"),
                     )
                 )
+                logger.info(f"สร้าง Raw Edges สำหรับ rule '{name}' จำนวน {raw_edges.count()} รายการ")
                 edges = (
                     raw_edges
                     .groupBy("src", "dst")
@@ -518,10 +519,12 @@ def main():
                 if edges.rdd.isEmpty():
                     logger.warning(f"ไม่พบ Edge ที่ตรงตามเงื่อนไขสำหรับ rule '{name}'.")
                     continue
+                logger.info(f"กรอง Edges ที่มีอย่างน้อย {number_camera} common points สำหรับ rule '{name}' จำนวน {edges.count()} รายการ")
                 verts = events.select(col("vehicle").alias("id")).distinct()
                 g = GraphFrame(verts, edges.select("src", "dst"))
                 cc = g.connectedComponents()
                 groups_all = cc.groupBy("component").agg(collect_list("id").alias("vehicles")).filter(size(col("vehicles")) > 1)
+                logger.info(f"พบกลุ่มรถทั้งหมด {groups_all.count()} กลุ่มสำหรับ rule '{name}'")
                 groups_exploded = groups_all.select(col("component"), explode(col("vehicles")).alias("vehicle"))
                 if active_count < 1000:
                     groups_with_interest = (
