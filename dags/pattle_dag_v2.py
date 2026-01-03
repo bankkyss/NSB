@@ -113,7 +113,7 @@ try:
     time_threshold = Variable.get("graph_time_threshold_seconds", "300")
     
     # Arguments สำหรับ Parquet Caching
-    parquet_cache_path = Variable.get("vehicle_area_parquet_cache_path", "")
+    parquet_cache_path = Variable.get("vehicle_graph_parquet_cache_path", "")
     redis_checkpoint_key = Variable.get("vehicle_graph_checkpoint_key", "vehicle_graph_analysis:checkpoint_ts")
     checkpoint_overlap_seconds = Variable.get("vehicle_graph_checkpoint_overlap_seconds", "60")
     
