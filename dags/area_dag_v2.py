@@ -112,8 +112,8 @@ try:
     kafka_brokers = Variable.get("kafka_brokers", "kafka.kafka.svc.cluster.local:9092")
     kafka_alerts_topic = Variable.get("kafka_alerts_topic", "alearts_topic")
     kafka_log_event_topic = Variable.get("kafka_log_event_topic", "log_event_topic")
-    kafka_alerts_topic = f"{kafka_alerts_topic}demo"
-    kafka_log_event_topic = f"{kafka_log_event_topic}demo"
+    kafka_alerts_topic = f"{kafka_alerts_topic}"
+    kafka_log_event_topic = f"{kafka_log_event_topic}"
     lookback_hours = Variable.get("lpr_lookback_hours_v2", "12")
     time_threshold = Variable.get("lpr_time_threshold_seconds", "300")
     parquet_cache_path = Variable.get("vehicle_area_parquet_cache_path", "")
