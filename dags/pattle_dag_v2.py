@@ -197,7 +197,7 @@ with DAG(
         # พารามิเตอร์สำหรับแบ่งสรร 10 Cores ที่ได้มา
         num_executors=1,
         executor_cores=15,
-        executor_memory="40g",
+        executor_memory="20g",
         driver_memory="10g",
         
         # --- Spark configurations เพิ่มเติม ---
