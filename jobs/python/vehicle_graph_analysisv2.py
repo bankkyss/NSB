@@ -518,8 +518,15 @@ def main():
                 edges = edges.checkpoint(eager=True).cache()
                 if edges.rdd.isEmpty():
                     logger.warning(f"ไม่พบ Edge ที่ตรงตามเงื่อนไขสำหรับ rule '{name}'.")
+                    
+                    max_common_points = (
+                        edges
+                        .agg(spark_max("common_points").alias("max_common_points"))
+                        .first()["max_common_points"]
+                    )
+                    logger.info(f"จำนวน camera มากที่สุดที่พบ (common points) สำหรับ rule '{name}' คือ {max_common_points}")
+                    logger.info(f"กรอง Edges ที่มีอย่างน้อย {number_camera} common points สำหรับ rule '{name}' จำนวน {edges.count()} รายการ")
                     continue
-                logger.info(f"กรอง Edges ที่มีอย่างน้อย {number_camera} common points สำหรับ rule '{name}' จำนวน {edges.count()} รายการ")
                 verts = events.select(col("vehicle").alias("id")).distinct()
                 g = GraphFrame(verts, edges.select("src", "dst"))
                 cc = g.connectedComponents()
