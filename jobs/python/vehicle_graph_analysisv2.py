@@ -11,9 +11,10 @@ from pyspark.sql.functions import (
     to_json, struct, unix_timestamp, expr,
     min as spark_min, max as spark_max, collect_set,
     current_timestamp, explode, lit, date_format, to_timestamp,
-    hour, when, sum as spark_sum
+    hour, when, sum as spark_sum, broadcast
 )
 from pyspark.sql.utils import AnalysisException
+from pyspark.sql.window import Window
 from datetime import timedelta
 
 from graphframes import GraphFrame
@@ -69,6 +70,9 @@ def create_spark_session():
         .appName("Vehicle Group Alert v2")
         .config("spark.sql.adaptive.enabled", "true")
         .config("spark.sql.adaptive.coalescePartitions.enabled", "true")
+        .config("spark.sql.adaptive.skewJoin.enabled", "true")
+        .config("spark.sql.autoBroadcastJoinThreshold", "100m")
+        .config("spark.sql.broadcastTimeout", "600")
         .config("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
         .config("spark.sql.streaming.forceDeleteTempCheckpointLocation", "true")
         # .config("spark.hadoop.fs.defaultFS", "hdfs://hadoop-hadoop-hdfs-nn.speak-test.svc.cluster.local:9000") # Removed to prevent S3A staging error
@@ -452,11 +456,20 @@ def main():
                     .cache()
                 )
 
-                if df_interest.rdd.isEmpty():
-                     logger.info(f"ไม่พบรถที่ Active ในช่วง {args.time_threshold_seconds}s ล่าสุด สำหรับ rule '{name}'. Skipping.")
-                     continue
-                
-                logger.info(f"พบ Active Cars จำนวน {df_interest.count()} คัน (ไว้ใช้ Filter กลุ่ม)")
+                active_count = df_interest.count()
+                if active_count == 0:
+                    logger.info(f"ไม่พบรถที่ Active ในช่วง {args.time_threshold_seconds}s ล่าสุด สำหรับ rule '{name}'. Skipping.")
+                    continue
+
+                total_vehicle_count = df_full.select("license_plate").distinct().count()
+                inactive_count = max(total_vehicle_count - active_count, 0)
+                logger.info(f"พบ Active Cars จำนวน {active_count} คัน (ไว้ใช้ Filter กลุ่ม)")
+                logger.info(
+                    f"Inactive Cars จำนวน {inactive_count} คัน (จากทั้งหมด {total_vehicle_count} คัน) สำหรับ rule '{name}'"
+                )
+                df_interest_join = df_interest.withColumnRenamed("license_plate", "vehicle")
+                if active_count < 1000:
+                    df_interest_join = broadcast(df_interest_join)
 
                 # 2. ใช้ข้อมูล Full 24H สำหรับสร้าง Graph (Events) เพื่อให้เห็นความสัมพันธ์ครบถ้วน
                 # (ไม่ filter เวลาทิ้ง เพื่อให้เห็นคู่ Inactive)
@@ -468,10 +481,40 @@ def main():
                     .repartition("point") 
                     .cache()
                 )
-                
-                e1, e2 = events.alias("a"), events.alias("b")
-                raw_edges = e1.join(e2, (col("a.point") == col("b.point")) & (col("a.vehicle") < col("b.vehicle")) & (abs(col("a.timestamp") - col("b.timestamp")) <= time_range)).select(col("a.vehicle").alias("src"), col("b.vehicle").alias("dst"), col("a.point"))
-                edges = raw_edges.groupBy("src", "dst").agg(countDistinct("point").alias("common_points")).filter(col("common_points") >= number_camera).cache()
+
+                time_range_seconds = int(time_range)
+                window_spec = (
+                    Window.partitionBy("point")
+                    .orderBy("timestamp")
+                    .rangeBetween(-time_range_seconds, time_range_seconds)
+                )
+                edges_candidates = events.withColumn(
+                    "candidates",
+                    collect_set(struct("vehicle", "timestamp")).over(window_spec),
+                )
+                raw_edges = (
+                    edges_candidates
+                    .select(
+                        col("vehicle").alias("src"),
+                        col("point"),
+                        col("timestamp"),
+                        explode("candidates").alias("candidate"),
+                    )
+                    .filter(col("src") < col("candidate.vehicle"))
+                    .filter(abs(col("candidate.timestamp") - col("timestamp")) <= time_range_seconds)
+                    .select(
+                        col("src"),
+                        col("candidate.vehicle").alias("dst"),
+                        col("point"),
+                    )
+                )
+                edges = (
+                    raw_edges
+                    .groupBy("src", "dst")
+                    .agg(countDistinct("point").alias("common_points"))
+                    .filter(col("common_points") >= number_camera)
+                )
+                edges = edges.checkpoint(eager=True).cache()
                 if edges.rdd.isEmpty():
                     logger.warning(f"ไม่พบ Edge ที่ตรงตามเงื่อนไขสำหรับ rule '{name}'.")
                     continue
@@ -480,7 +523,22 @@ def main():
                 cc = g.connectedComponents()
                 groups_all = cc.groupBy("component").agg(collect_list("id").alias("vehicles")).filter(size(col("vehicles")) > 1)
                 groups_exploded = groups_all.select(col("component"), explode(col("vehicles")).alias("vehicle"))
-                groups_with_interest = groups_exploded.join(df_interest.withColumnRenamed("license_plate", "vehicle"), "vehicle", "inner").select("component").distinct().join(groups_all, "component")
+                if active_count < 1000:
+                    groups_with_interest = (
+                        groups_exploded
+                        .join(df_interest_join, "vehicle", "semi")
+                        .select("component")
+                        .distinct()
+                        .join(groups_all, "component")
+                    )
+                else:
+                    groups_with_interest = (
+                        groups_exploded
+                        .join(df_interest_join, "vehicle", "inner")
+                        .select("component")
+                        .distinct()
+                        .join(groups_all, "component")
+                    )
                 if groups_with_interest.rdd.isEmpty():
                     logger.info(f"ไม่พบกลุ่มที่มีรถที่น่าสนใจสำหรับ rule '{name}'.")
                     continue

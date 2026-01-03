@@ -209,10 +209,17 @@ with DAG(
             "spark.dynamicAllocation.enabled": "false",
             
             # การตั้งค่าประสิทธิภาพสำหรับ GraphFrames
-            "spark.sql.adaptive.enabled": "false",
+            "spark.sql.adaptive.enabled": "true",
             "spark.sql.adaptive.coalescePartitions.enabled": "true",
+            "spark.sql.adaptive.skewJoin.enabled": "true",
+            "spark.sql.autoBroadcastJoinThreshold": "100m",
+            "spark.sql.broadcastTimeout": "600",
+            "spark.sql.shuffle.partitions": "200",
+            "spark.sql.files.maxPartitionBytes": "128m",
+            "spark.executor.memoryOverhead": "4g",
+            "spark.driver.memoryOverhead": "2g",
             "spark.driver.maxResultSize": "2g",
-            "spark.sql.maxPlanStringLength": "10485760",
+            "spark.sql.maxPlanStringLength": "52428800",
             "spark.serializer": "org.apache.spark.serializer.KryoSerializer",
             "spark.sql.streaming.forceDeleteTempCheckpointLocation": "true",
             
