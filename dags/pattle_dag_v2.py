@@ -156,7 +156,7 @@ except (AirflowNotFoundException, KeyError) as e:
 # นิยาม DAG
 # ---------------------------------------------------------------------------
 with DAG(
-    dag_id="vehicle_graph_analysis_production_v2",
+    dag_id="vehicle_graph_analysis_production_v2_updated",
     description="วิเคราะห์ความสัมพันธ์ของยานพาหนะโดยใช้ GraphFrames และ Spark (v2)",
     start_date=datetime(2025, 6, 27),
     schedule="*/10 * * * *",  # รันทุกๆ 10 นาที
