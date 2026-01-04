@@ -120,8 +120,8 @@ try:
         "--redis-port", str(redis_conn.port),
         "--redis-password", redis_conn.password,
         "--kafka-brokers", kafka_brokers,
-        "--kafka-alerts-topic", kafka_alerts_topic,
-        "--kafka-log-event-topic", kafka_log_event_topic,
+        "--kafka-alerts-topic", f"test_{kafka_alerts_topic}",
+        "--kafka-log-event-topic", f"test_{kafka_log_event_topic}",
         "--lookback-hours", lookback_hours,
         "--time-threshold-seconds", time_threshold,
     ]
