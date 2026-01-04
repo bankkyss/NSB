@@ -111,7 +111,7 @@ try:
     kafka_alerts_topic = Variable.get("kafka_alerts_topic_pattle", "alearts_topic")
     kafka_log_event_topic = Variable.get("kafka_log_event_topic", "log_event_topic")
     lookback_hours = Variable.get("lpr_lookback_hours", "12")
-    time_threshold = Variable.get("graph_time_threshold_seconds", "300")
+    time_threshold = Variable.get("graph_time_threshold_seconds_v2", "300")
     
     # Arguments สำหรับ Parquet Caching
     parquet_cache_path = Variable.get("vehicle_graph_parquet_cache_path", "")
