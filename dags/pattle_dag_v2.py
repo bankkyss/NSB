@@ -246,6 +246,12 @@ with DAG(
             "spark.hadoop.fs.s3a.change.detection.mode": "none",
             "spark.hadoop.fs.s3a.change.detection.source": "none",
             "spark.hadoop.fs.s3a.change.detection.version.required": "false",
+
+            # เพิ่มค่า Timeout สำหรับ HDFS Client
+            "spark.hadoop.ipc.client.connect.timeout": "60000", # 60 วินาที (จากเดิมมักจะ 20s)
+            "spark.hadoop.ipc.client.connect.max.retries.on.timeouts": "5",
+            "spark.hadoop.ipc.ping.interval": "30000",
+            "spark.hadoop.dfs.client.socket-timeout": "120000", # เพิ่ม Socket timeout
         },
         
         application_args=APPLICATION_ARGS,
