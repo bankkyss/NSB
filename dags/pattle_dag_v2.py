@@ -23,6 +23,7 @@ from airflow.operators.python import PythonOperator
 from airflow.providers.apache.spark.operators.spark_submit import SparkSubmitOperator
 from airflow.exceptions import AirflowNotFoundException
 import os
+# import requests
 
 # ---------------------------------------------------------------------------
 # ค่าคงที่สำหรับ DAG - สามารถปรับเปลี่ยนได้ตามสภาพแวดล้อม
