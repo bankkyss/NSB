@@ -110,7 +110,7 @@ try:
     kafka_brokers = Variable.get("kafka_brokers", "kafka.kafka.svc.cluster.local:9092")
     kafka_alerts_topic = Variable.get("kafka_alerts_topic_pattle", "alearts_topic")
     kafka_log_event_topic = Variable.get("kafka_log_event_topic", "log_event_topic")
-    lookback_hours = Variable.get("lpr_lookback_hours", "12")
+    lookback_hours = Variable.get("lpr_lookback_hours_graph", "12")
     time_threshold = Variable.get("graph_time_threshold_seconds_v2", "300")
     
     # Arguments สำหรับ Parquet Caching
