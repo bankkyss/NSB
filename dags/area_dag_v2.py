@@ -203,7 +203,7 @@ except (AirflowNotFoundException, KeyError) as e:
 # ---------------------------------------------------------------------------
 with DAG(
     dag_id="vehicle_area_analysis_production_v2",
-    description="วิเคราะห์การตัดกันของป้ายทะเบียนในพื้นที่ต่างๆ โดยใช้ Spark (v2)",
+    description="วิเคราะห์การตัดกันของป้ายทะเบียนในพื้นที่ต่างๆ โดยใช้ Spark (v2).",
     start_date=datetime(2025, 6, 27),
     schedule="*/5 * * * *",  
     catchup=False,
