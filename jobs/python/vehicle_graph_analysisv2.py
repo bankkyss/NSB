@@ -113,7 +113,7 @@ def get_rule_data(redis_host, redis_port, redis_password, redis_pattern):
                     rules.append({
                         "rule_id": payload["id"], "name": payload["rule_name"],
                         "number_camera": payload["number_camera"] if payload["number_camera"]>2 else 3,
-                        "time_range": payload["time_range"] if payload["time_range"]<300 else 300,
+                        "time_range": payload["time_range"] if payload["time_range"]<600 else 600,
                         "camera_ids": payload["camera_id"]
                     })
                 else:
@@ -183,28 +183,61 @@ def update_checkpoint_timestamp(redis_client, key, new_timestamp, logger):
     except redis.exceptions.RedisError as exc:
         logger.warning(f"Failed to update checkpoint in Redis key '{key}': {exc}")
 
-
-def load_cached_events(spark, cache_path, min_event_time, logger):
+def load_cached_events(spark, cache_path, lookback_start, logger):
     if not cache_path:
         return None
-    logger.info(
-        "Loading parquet cache from %s (min_event_time=%s).",
-        cache_path,
-        format_timestamp(min_event_time),
-    )
+        
+    logger.info(f"Loading parquet cache from {cache_path} (lookback_start={lookback_start})")
+    
     try:
-        cached_df = spark.read.parquet(cache_path)
+        df = spark.read.parquet(cache_path)
+        
+        # 1. Partition Pruning (Performance)
+        # ตรวจสอบก่อนว่ามีคอลัมน์ partition ที่เราต้องการหรือไม่ เพื่อกัน error
+        columns = df.columns
+        if lookback_start and "event_date" in columns and "event_hour" in columns:
+            start_date = lookback_start.date()
+            start_hour = lookback_start.hour
+            df = df.filter(
+                (col("event_date") > lit(start_date)) |
+                ((col("event_date") == lit(start_date)) & (col("event_hour") >= lit(start_hour)))
+            )
+
+        # 2. Precise Filtering (Accuracy)
+        if lookback_start:
+            df = df.filter(col("event_time") >= lit(lookback_start))
+            
+        logger.info(f"Successfully loaded and pruned cache from {cache_path}")
+        return df
+
     except AnalysisException as exc:
         logger.warning(f"No parquet cache found at {cache_path}: {exc}")
         return None
     except Exception as exc:
         logger.error(f"Failed to read parquet cache from {cache_path}: {exc}", exc_info=True)
         return None
-    logger.info("Loaded parquet cache from %s.", cache_path)
-    # logger.info("Parquet cache schema: %s", cached_df.schema.simpleString())
-    if min_event_time is not None:
-        cached_df = cached_df.filter(col("event_time") >= lit(min_event_time))
-    return cached_df
+
+# def load_cached_events(spark, cache_path, min_event_time, logger):
+#     if not cache_path:
+#         return None
+#     logger.info(
+#         "Loading parquet cache from %s (min_event_time=%s).",
+#         cache_path,
+#         format_timestamp(min_event_time),
+#     )
+#     try:
+#         cached_df = spark.read.parquet(cache_path)
+#     except AnalysisException as exc:
+#         logger.warning(f"No parquet cache found at {cache_path}: {exc}")
+#         return None
+#     except Exception as exc:
+#         logger.error(f"Failed to read parquet cache from {cache_path}: {exc}", exc_info=True)
+#         return None
+#     logger.info("Loaded parquet cache from %s.", cache_path)
+#     # logger.info("Parquet cache schema: %s", cached_df.schema.simpleString())
+#     if min_event_time is not None:
+#         cached_df = cached_df.filter(col("event_time") >= lit(min_event_time))
+#     return cached_df
 
 def log_event_date_stats(events_df, logger, label):
     if "event_date" not in events_df.columns:

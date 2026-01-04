@@ -159,10 +159,10 @@ with DAG(
     dag_id="vehicle_graph_analysis_production_v2",
     description="วิเคราะห์ความสัมพันธ์ของยานพาหนะโดยใช้ GraphFrames และ Spark (v2)_fortest",
     start_date=datetime(2025, 6, 27),
-    schedule="*/10 * * * *",  # รันทุกๆ 10 นาที
+    schedule="*/15 * * * *",  # รันทุกๆ 10 นาที
     catchup=False,
     tags=["spark", "graphframes", "vehicle", "production"],
-    max_active_runs=1,
+    max_active_runs=2,
     dagrun_timeout=timedelta(minutes=60),
     default_args={
         "owner": "airflow",
@@ -196,10 +196,10 @@ with DAG(
         # total_executor_cores=10,
         total_executor_cores=20, 
         # พารามิเตอร์สำหรับแบ่งสรร 10 Cores ที่ได้มา
-        num_executors=1,
-        executor_cores=15,
-        executor_memory="20g",
-        driver_memory="10g",
+        num_executors=2,
+        executor_cores=6,
+        executor_memory="10g",
+        driver_memory="8g",
         
         # --- Spark configurations เพิ่มเติม ---
         conf={
